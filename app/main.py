@@ -1,48 +1,70 @@
-import base64
+import asyncio
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
-from app.sessions import Session
-from app.gemini_ws import GeminiLiveClient
+from fastapi import FastAPI, WebSocket
+from audio_utils import pcm16_to_base64
+from gemini_client import text_response, image_response
+from router import needs_image
+from session_manager import SessionManager
+from config import SESSION_TIMEOUT_SECONDS, WARNING_BEFORE_CLOSE_SECONDS
 
 app = FastAPI()
 
-
-@app.websocket("/ws/spectacles")
-async def spectacles_ws(ws: WebSocket):
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
 
-    session = Session()
-    gemini = GeminiLiveClient()
-    await gemini.connect()
+    session = SessionManager(
+        ws,
+        SESSION_TIMEOUT_SECONDS,
+        WARNING_BEFORE_CLOSE_SECONDS
+    )
+
+    asyncio.create_task(session.monitor())
+
+    conversation = []
 
     try:
         while True:
             msg = await ws.receive()
 
-            # Control message (JSON)
-            if msg.get("text"):
-                control = json.loads(msg["text"])
-                session.last_type = control["type"]
+            session.touch()
 
-            # Binary frame
-            elif msg.get("bytes"):
-                b64 = base64.b64encode(msg["bytes"]).decode()
+            if msg["type"] == "websocket.receive":
+                data = msg.get("bytes") or msg.get("text")
 
-                if session.last_type == "audio":
-                    session.set_audio(b64)
-                elif session.last_type == "video":
-                    session.set_image(b64)
+                if isinstance(data, bytes):
+                    audio_b64 = pcm16_to_base64(data)
+                    conversation.append({
+                        "role": "user",
+                        "parts": [{
+                            "inline_data": {
+                                "mime_type": "audio/pcm;rate=16000",
+                                "data": audio_b64
+                            }
+                        }]
+                    })
 
-                payload = session.build_payload()
-                await gemini.send(payload)
+                else:
+                    parsed = json.loads(data)
+                    user_text = parsed["text"]
 
-                response = await gemini.receive()
-                await ws.send_json(response)
+                    conversation.append({
+                        "role": "user",
+                        "parts": [{"text": user_text}]
+                    })
 
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await gemini.close()
+                    if needs_image(user_text):
+                        result = image_response(conversation)
+                    else:
+                        result = text_response(conversation)
 
+                    model_reply = result["candidates"][0]["content"]
+                    conversation.append(model_reply)
 
+                    await ws.send_json({
+                        "type": "model_response",
+                        "content": model_reply
+                    })
+
+    except Exception as e:
+        await ws.close()

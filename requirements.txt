@@ -1,4 +1,32 @@
+# API server
 fastapi==0.110.0
+
+# ASGI server for FastAPI
 uvicorn[standard]==0.29.0
+
+# WebSocket support
 websockets==12.0
+
+# Environment variables
 python-dotenv==1.0.1
+
+# HTTP requests for Gemini API
+requests>=2.31.0
+
+# Audio processing for PCM -> base64
+numpy>=1.26.0
+scipy>=1.12.1
+
+# Image handling for Gemini image responses
+Pillow>=10.0.0
+
+# Pydantic for data validation / models
+pydantic>=2.12.5
+
+# Async utilities needed by FastAPI / Uvicorn
+anyio>=4.12.1
+watchfiles>=1.1.1
+
+# Protocol helpers for uvicorn
+httptools>=0.7.1
+h11>=0.16.0

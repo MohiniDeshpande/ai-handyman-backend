@@ -1,11 +1,11 @@
 import asyncio
 import json
 from fastapi import FastAPI, WebSocket
-from audio_utils import pcm16_to_base64
-from gemini_client import text_response, image_response
-from router import needs_image
-from session_manager import SessionManager
-from config import SESSION_TIMEOUT_SECONDS, WARNING_BEFORE_CLOSE_SECONDS
+from .audio_utils import pcm16_to_base64
+from .gemini_client import text_response, image_response
+from .router import needs_image
+from .session_manager import SessionManager
+from .config import SESSION_TIMEOUT_SECONDS, WARNING_BEFORE_CLOSE_SECONDS
 
 app = FastAPI()
 
@@ -68,3 +68,4 @@ async def websocket_endpoint(ws: WebSocket):
 
     except Exception as e:
         await ws.close()
+

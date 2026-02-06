@@ -1,5 +1,5 @@
 import requests
-from config import (
+from .config import (
     GEMINI_API_KEY,
     GEMINI_BASE_URL,
     TEXT_MODEL,

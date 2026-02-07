@@ -1,13 +1,11 @@
 import os
 
-# Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY not set")
+# This pulls the key from the Render Environment tab we just set up
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta"
-TEXT_MODEL = "models/gemini-3-pro-preview"           # for text/audio/video processing
-IMAGE_MODEL = "models/gemini-3-pro-image-preview"    # only for image generation
+# Gemini 3 Pro reasoning models
+TEXT_MODEL = "gemini-3-pro-preview"
+IMAGE_MODEL = "gemini-3-pro-image-preview"
 
 # Audio config
 AUDIO_SAMPLE_RATE = 16000

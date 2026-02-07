@@ -1,63 +1,43 @@
-# main.py
-import os
 import json
-import logging
+import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from .config import TEXT_MODEL, IMAGE_MODEL, AUDIO_SAMPLE_RATE, AUDIO_MIME_TYPE
+from .session_manager import SessionManager
 from .gemini_client import GeminiClient
-from .session_manager import SessionManager  # imported now
+from .config import SESSION_TIMEOUT_SECONDS, WARNING_BEFORE_CLOSE_SECONDS
 
-logging.basicConfig(level=logging.INFO)
+app = FastAPI()
 
-app = FastAPI(title="AI Handyman Backend")
-
-# Gemini client (multi-model)
-gemini_client = GeminiClient(
-    text_model=TEXT_MODEL,
-    image_model=IMAGE_MODEL,
-    audio_sample_rate=AUDIO_SAMPLE_RATE,
-    audio_mime_type=AUDIO_MIME_TYPE,
-)
+# Initialize clients
+sessions = SessionManager(timeout_seconds=SESSION_TIMEOUT_SECONDS, warning_seconds=WARNING_BEFORE_CLOSE_SECONDS)
+gemini_client = GeminiClient()
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    logging.info("WebSocket connected")
-    session = SessionManager(ws=websocket)
-
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    session_id = sessions.create()
     try:
-        while session.active:
-            msg = await websocket.receive_text()
+        while True:
+            msg = await ws.receive_text()
             try:
                 data = json.loads(msg)
             except json.JSONDecodeError:
-                logging.error(
-                    f"Invalid JSON received (likely concatenated frames). Length={len(msg)}"
-                )
+                await ws.send_text(json.dumps({"error": "Invalid JSON"}))
                 continue
 
-            msg_type = data.get("type")
-            if msg_type == "audio":
-                b64_audio = data.get("pcm_b64", "")
-                if b64_audio:
-                    await gemini_client.send_audio(b64_audio)
-                    logging.info(f"Processed audio chunk size={len(b64_audio)}")
-            elif msg_type == "image":
-                b64_image = data.get("image_b64", "")
-                if b64_image:
-                    await gemini_client.send_image(b64_image)
-                    logging.info(f"Processed image size={len(b64_image)}")
-            elif msg_type == "text":
-                prompt = data.get("prompt", "")
-                if prompt:
-                    response = await gemini_client.send_text(prompt)
-                    await websocket.send_text(json.dumps({"type": "text_response", "response": response}))
-            else:
-                logging.warning(f"Unknown message type: {msg_type}")
+            # handle text messages
+            if "text" in data:
+                response = gemini_client.send_text(data["text"])
+                await ws.send_text(json.dumps({"type": "text", "response": response}))
+
+            # handle audio messages
+            elif "audio_b64" in data:
+                response = gemini_client.send_audio(data["audio_b64"])
+                await ws.send_text(json.dumps({"type": "audio", "response": response}))
+
+            # handle image generation
+            elif "image_prompt" in data:
+                response = gemini_client.generate_image(data["image_prompt"])
+                await ws.send_text(json.dumps({"type": "image", "response": response}))
 
     except WebSocketDisconnect:
-        logging.info("WebSocket disconnected")
-        await session.close()
-    except Exception as e:
-        logging.exception("WebSocket fatal error")
-        await session.close()
+        sessions.remove(session_id)

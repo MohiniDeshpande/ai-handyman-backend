@@ -1,12 +1,12 @@
 import httpx
 import json
-from app.config import GEMINI_API_KEY, GEMINI_BASE_URL, TEXT_MODEL
+from app.config import GEMINI_API_KEY, GEMINI_API_URL, TEXT_MODEL
 
 class GeminiClient:
     def __init__(self, api_key: str = GEMINI_API_KEY):
         self.api_key = api_key
         # Target the 3 Pro Preview model via v1beta
-        self.endpoint = f"{GEMINI_BASE_URL}/models/{TEXT_MODEL}:generateContent?key={self.api_key}"
+        self.endpoint = f"{GEMINI_API_URL}/models/{TEXT_MODEL}:generateContent?key={self.api_key}"
 
     async def analyze_handyman_context(self, audio_list: list, image_b64: str = None):
         parts = []

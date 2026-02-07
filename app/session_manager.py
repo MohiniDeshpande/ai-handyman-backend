@@ -1,32 +1,15 @@
-import asyncio
-import time
+# session_manager.py
 
+from fastapi import WebSocket
 
 class SessionManager:
-    def __init__(self, ws, timeout, warning):
+    def __init__(self, ws: WebSocket = None, timeout: int = 3600, warning: bool = True):
         self.ws = ws
         self.timeout = timeout
         self.warning = warning
-        self.last_active = time.time()
-        self.warned = False
+        self.active = True
 
-    def touch(self):
-        self.last_active = time.time()
-        self.warned = False
-
-    async def monitor(self):
-        while True:
-            await asyncio.sleep(1)
-            elapsed = time.time() - self.last_active
-
-            if elapsed > self.timeout - self.warning and not self.warned:
-                await self.ws.send_json({
-                    "type": "warning",
-                    "message": "Session will close in 15 seconds due to inactivity"
-                })
-                self.warned = True
-
-            if elapsed > self.timeout:
-                await self.ws.close()
-                break
-
+    async def close(self):
+        self.active = False
+        if self.ws:
+            await self.ws.close()

@@ -1,6 +1,6 @@
 import httpx
 import json
-from .config import GEMINI_API_KEY, GEMINI_API_URL, TEXT_MODEL, IMAGE_MODEL, THINKING_LEVEL, MEDIA_RESOLUTION
+from app.config import GEMINI_API_KEY, GEMINI_API_URL, TEXT_MODEL, IMAGE_MODEL, THINKING_LEVEL, MEDIA_RESOLUTION
 
 class GeminiClient:
     def __init__(self, api_key: str = GEMINI_API_KEY):

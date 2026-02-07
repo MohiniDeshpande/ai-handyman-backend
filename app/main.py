@@ -1,32 +1,20 @@
 import asyncio
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket
+from .session_manager import SessionManager
+from .gemini_client import call_text_model, call_image_model
+from .audio_utils import needs_image
 
-# Your utility imports
-from .audio_utils import pcm16_to_base64, needs_image, image_response, text_response
-from .session_manager import SessionManager  # Make sure this exists
-
-# Session constants
-SESSION_TIMEOUT_SECONDS = 300
-WARNING_BEFORE_CLOSE_SECONDS = 30
-
-# Initialize FastAPI
 app = FastAPI()
 
-
-# --- Your existing routes (if any) ---
-@app.get("/")
-async def root():
-    return {"message": "AI Handyman Backend is running!"}
+SESSION_TIMEOUT_SECONDS = 60
+WARNING_BEFORE_CLOSE_SECONDS = 15
 
 
-# --- WebSocket endpoint ---
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    print("WebSocket connection accepted")
 
-    # Start session monitor
     session = SessionManager(
         ws,
         SESSION_TIMEOUT_SECONDS,
@@ -34,139 +22,72 @@ async def websocket_endpoint(ws: WebSocket):
     )
     asyncio.create_task(session.monitor())
 
+    # buffers for fusion
     conversation = []
+    pending_audio = []
+    pending_image = None
 
     try:
         while True:
-            try:
-                # Try receiving text first
-                data = await ws.receive_text()
-                is_bytes = False
-            except Exception:
-                # If not text, try bytes
-                data = await ws.receive_bytes()
-                is_bytes = True
+            msg = await ws.receive_text()
+            session.touch()
 
-            session.touch()  # Update session timer
+            payload = json.loads(msg)
+            msg_type = payload.get("type")
 
-            # Handle audio bytes
-            if is_bytes:
-                audio_b64 = pcm16_to_base64(data)
-                conversation.append({
-                    "role": "user",
-                    "parts": [{"inline_data": {"mime_type": "audio/pcm;rate=16000", "data": audio_b64}}]
-                })
-                # Optional: send acknowledgement to client
-                await ws.send_json({"type": "ack", "message": "Audio received"})
-
-            else:
-                # Handle text
-                parsed = json.loads(data)
-                user_text = parsed.get("text", "")
-
-                conversation.append({
-                    "role": "user",
-                    "parts": [{"text": user_text}]
+            # ---- AUDIO ----
+            if msg_type == "audio":
+                pending_audio.append({
+                    "inline_data": {
+                        "mime_type": "audio/pcm;rate=16000",
+                        "data": payload["data"]
+                    }
                 })
 
-                # Decide if response is text or image
-                if needs_image(user_text):
-                    result = image_response(conversation)
+            # ---- IMAGE ----
+            elif msg_type == "image":
+                pending_image = {
+                    "inline_data": {
+                        "mime_type": payload["mime_type"],
+                        "data": payload["data"]
+                    }
+                }
+
+            # ---- TEXT (flush trigger) ----
+            elif msg_type == "text":
+                parts = []
+
+                if pending_image:
+                    parts.append(pending_image)
+
+                parts.extend(pending_audio)
+
+                parts.append({"text": payload["text"]})
+
+                user_turn = {
+                    "role": "user",
+                    "parts": parts
+                }
+
+                conversation.append(user_turn)
+
+                # routing logic
+                if needs_image(payload["text"]):
+                    result = call_image_model(conversation)
                 else:
-                    result = text_response(conversation)
+                    result = call_text_model(conversation)
 
                 model_reply = result["candidates"][0]["content"]
                 conversation.append(model_reply)
 
-                # Send back to client
                 await ws.send_json({
                     "type": "model_response",
                     "content": model_reply
                 })
 
-    except WebSocketDisconnect:
-        print("Client disconnected")
-    except Exception as e:
-        print("WebSocket error:", e)
-    finally:
+                # reset fusion buffers
+                pending_audio = []
+                pending_image = None
+
+    except Exception:
         await ws.close()
-        print("WebSocket connection closed")
-
-
-# --- Uvicorn entry point ---
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=10000, reload=True)
-import asyncio
-import json
-from fastapi import FastAPI, WebSocket
-from .audio_utils import pcm16_to_base64
-from .gemini_client import text_response, image_response
-from .router import needs_image
-from .session_manager import SessionManager
-from .config import SESSION_TIMEOUT_SECONDS, WARNING_BEFORE_CLOSE_SECONDS
-
-app = FastAPI()
-
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-
-    session = SessionManager(
-        ws,
-        SESSION_TIMEOUT_SECONDS,
-        WARNING_BEFORE_CLOSE_SECONDS
-    )
-
-    asyncio.create_task(session.monitor())
-
-    conversation = []
-
-    try:
-        while True:
-            msg = await ws.receive()
-
-            session.touch()
-
-            if msg["type"] == "websocket.receive":
-                data = msg.get("bytes") or msg.get("text")
-
-                if isinstance(data, bytes):
-                    audio_b64 = pcm16_to_base64(data)
-                    conversation.append({
-                        "role": "user",
-                        "parts": [{
-                            "inline_data": {
-                                "mime_type": "audio/pcm;rate=16000",
-                                "data": audio_b64
-                            }
-                        }]
-                    })
-
-                else:
-                    parsed = json.loads(data)
-                    user_text = parsed["text"]
-
-                    conversation.append({
-                        "role": "user",
-                        "parts": [{"text": user_text}]
-                    })
-
-                    if needs_image(user_text):
-                        result = image_response(conversation)
-                    else:
-                        result = text_response(conversation)
-
-                    model_reply = result["candidates"][0]["content"]
-                    conversation.append(model_reply)
-
-                    await ws.send_json({
-                        "type": "model_response",
-                        "content": model_reply
-                    })
-
-    except Exception as e:
-        await ws.close()
-
-
-

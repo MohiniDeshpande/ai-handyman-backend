@@ -8,49 +8,44 @@ logger = logging.getLogger(__name__)
 
 class GeminiClient:
     def __init__(self, api_key: str = GEMINI_API_KEY):
-        # The SDK automatically uses the correct v1beta endpoint for Gemini 3
+        # Initializing the main client
         self.client = genai.Client(api_key=api_key)
 
     async def analyze_handyman_context(self, audio_list: list, image_b64: str = None):
         """
-        Sends multimodal data to Gemini 3 Pro using the official GenAI SDK.
+        Sends multimodal data to Gemini 3 Pro using the 2026 Async SDK patterns.
         """
-        contents = []
+        parts = []
 
-        # 1. Image Part
+        # 1. Image Part (Visual context)
         if image_b64:
-            contents.append(
-                types.Part.from_bytes(
-                    data=base64.b64decode(image_b64),
-                    mime_type="image/jpeg"
-                )
+            image_data = base64.b64decode(image_b64)
+            parts.append(
+                types.Part.from_bytes(data=image_data, mime_type="image/jpeg")
             )
 
-        # 2. Audio Parts (Spectacles standard PCM 16k)
+        # 2. Audio Parts (Voice context)
         for chunk in audio_list:
-            contents.append(
-                types.Part.from_bytes(
-                    data=base64.b64decode(chunk),
-                    mime_type="audio/pcm"
-                )
+            audio_data = base64.b64decode(chunk)
+            parts.append(
+                types.Part.from_bytes(data=audio_data, mime_type="audio/pcm")
             )
 
-        # 3. Reasoning Instruction
-        contents.append(
+        # 3. System Instruction as a Text Part
+        parts.append(
             types.Part.from_text(
-                text="You are a professional Handyman AI. Analyze the image and audio. "
-                     "Give a 1-sentence repair tip. Highlight safety risks."
+                text="Role: Expert Handyman. Task: Briefly answer the user's question based on the image provided. Stay safe."
             )
         )
 
         try:
-            # Using the asynchronous client 'aio' to prevent blocking the WebSocket
+            # Using the .aio module for the asynchronous generate_content call
             response = await self.client.aio.models.generate_content(
                 model=TEXT_MODEL,
-                contents=contents,
+                contents=[types.Content(role="user", parts=parts)],
                 config=types.GenerateContentConfig(
                     temperature=0.7,
-                    # High thinking level triggers the Gemini 3 deep reasoning
+                    # Triggers the Gemini 3 Pro reasoning engine
                     thinking_config=types.ThinkingConfig(
                         thinking_level=types.ThinkingLevel.HIGH
                     )
@@ -58,5 +53,5 @@ class GeminiClient:
             )
             return response.text
         except Exception as e:
-            print(f">>> [SDK ERROR] {e}", flush=True)
-            return None
+            logger.error(f">>> [GEMINI SDK ERROR] {e}")
+            return f"Error connecting to Gemini 3: {str(e)}"

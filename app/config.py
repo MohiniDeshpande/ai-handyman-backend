@@ -21,3 +21,6 @@ WARNING_BEFORE_CLOSE_SECONDS = 60
 # 2026 Specific Settings
 THINKING_LEVEL = "high"  # Options: "low" (fast/cheap) or "high" (complex reasoning)
 MEDIA_RESOLUTION = "media_resolution_high" # New parameter for 2026 vision tasks
+
+SILENCE_THRESHOLD = 350
+AUDIO_TRIGGER_CHUNKS = 20

@@ -1,37 +1,40 @@
-import os
+# gemini_client.py
+import json
 import requests
+from config import GEMINI_API_URL, GEMINI_API_KEY
 
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+class GeminiClient:
+    def __init__(self):
+        self.api_url = GEMINI_API_URL
+        self.api_key = GEMINI_API_KEY
 
-TEXT_MODEL = "models/gemini-3-pro-preview"
-IMAGE_MODEL = "models/gemini-3-pro-image-preview"
-
-BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-
-
-def _call(model: str, contents: list):
-    url = f"{BASE_URL}/{model}:generateContent?key={GEMINI_API_KEY}"
-
-    payload = {
-        "contents": contents,
-        "generationConfig": {
-            "temperature": 0.4
+    def send_audio(self, conversation: list, audio_b64: str):
+        """
+        Sends audio to Gemini multi-step API
+        """
+        payload = {
+            "conversation": conversation,
+            "audio": {
+                "mime_type": "audio/pcm;rate=16000",
+                "data": audio_b64
+            }
         }
-    }
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        response = requests.post(f"{self.api_url}/multi_step", json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
 
-    resp = requests.post(url, json=payload, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def call_text_model(conversation):
-    return _call(TEXT_MODEL, conversation)
-
-
-def call_image_model(conversation):
-   
-    conversation = conversation + [{
-        "role": "user",
-        "parts": [{"text": "Generate an image based on the above context."}]
-    }]
-    return _call(IMAGE_MODEL, conversation)
+    def send_text_or_image(self, conversation: list, image_b64: str = None):
+        """
+        Sends text or image input to Gemini multi-step API
+        """
+        payload = {"conversation": conversation}
+        if image_b64:
+            payload["image"] = {
+                "mime_type": "image/png",
+                "data": image_b64
+            }
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        response = requests.post(f"{self.api_url}/multi_step", json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()

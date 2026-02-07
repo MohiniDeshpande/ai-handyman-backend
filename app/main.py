@@ -63,15 +63,15 @@ async def websocket_endpoint(ws: WebSocket):
         print(">>> [DISCONNECTED]", flush=True)
 
 async def process_ai_request(ws: WebSocket, audio: list, image: str):
-    # The SDK 'aio' call we set up in gemini_client.py
+    # Returns the plain text from the SDK's response.text helper
     ai_text = await gemini_client.analyze_handyman_context(audio, image)
+    
     if ai_text:
-        try:
-            await ws.send_text(json.dumps({
-                "event": "ai_result",
-                "data": {"speech_text": ai_text}
-            }))
-            print(f">>> [AI RESPONSE] {ai_text}", flush=True)
-        except:
-            pass
-            
+        # Standard Spectacles bridge format
+        payload = {
+            "event": "ai_result",
+            "data": {"speech_text": ai_text}
+        }
+        await ws.send_text(json.dumps(payload))
+        print(f">>> [AI SUCCESS] {ai_text[:100]}", flush=True)
+

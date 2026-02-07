@@ -1,63 +1,62 @@
-import httpx
-import json
-from app.config import GEMINI_API_KEY, GEMINI_API_URL, TEXT_MODEL
+import base64
+import logging
+from google import genai
+from google.genai import types
+from app.config import GEMINI_API_KEY, TEXT_MODEL
+
+logger = logging.getLogger(__name__)
 
 class GeminiClient:
     def __init__(self, api_key: str = GEMINI_API_KEY):
-        self.api_key = api_key
-        # Target the 3 Pro Preview model via v1beta
-        self.endpoint = f"{GEMINI_API_URL}/models/{TEXT_MODEL}:generateContent?key={self.api_key}"
+        # The SDK automatically uses the correct v1beta endpoint for Gemini 3
+        self.client = genai.Client(api_key=api_key)
 
     async def analyze_handyman_context(self, audio_list: list, image_b64: str = None):
-        parts = []
+        """
+        Sends multimodal data to Gemini 3 Pro using the official GenAI SDK.
+        """
+        contents = []
 
-        # 1. Visual Modality
+        # 1. Image Part
         if image_b64:
-            parts.append({
-                "inline_data": {
-                    "mime_type": "image/jpeg",
-                    "data": image_b64
-                }
-            })
-
-        # 2. Audio Modalities (PCM 16-bit 16kHz)
-        for chunk in audio_list:
-            parts.append({
-                "inline_data": {
-                    "mime_type": "audio/pcm;rate=16000",
-                    "data": chunk
-                }
-            })
-
-        # 3. Reasoning Instructions
-        parts.append({
-            "text": "Role: Expert AI Handyman. Based on the video frame and audio, provide one direct, safe instruction."
-        })
-
-        payload = {
-            "contents": [{"parts": parts}],
-            "generationConfig": {
-                "temperature": 0.4,
-                "max_output_tokens": 150,
-                # Requests Gemini 3 Pro's deep reasoning capability
-                "thinking_config": {"thinking_level": "high"}
-            }
-        }
-
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    self.endpoint, 
-                    json=payload, 
-                    headers={"Content-Type": "application/json"},
-                    timeout=45.0
+            contents.append(
+                types.Part.from_bytes(
+                    data=base64.b64decode(image_b64),
+                    mime_type="image/jpeg"
                 )
-                
-                if response.status_code == 200:
-                    return response.json()
-                else:
-                    print(f">>> [GEMINI 3 PRO ERROR] {response.status_code}: {response.text}", flush=True)
-                    return None
-            except Exception as e:
-                print(f">>> [HTTP EXCEPTION] {str(e)}", flush=True)
-                return None
+            )
+
+        # 2. Audio Parts (Spectacles standard PCM 16k)
+        for chunk in audio_list:
+            contents.append(
+                types.Part.from_bytes(
+                    data=base64.b64decode(chunk),
+                    mime_type="audio/pcm"
+                )
+            )
+
+        # 3. Reasoning Instruction
+        contents.append(
+            types.Part.from_text(
+                text="You are a professional Handyman AI. Analyze the image and audio. "
+                     "Give a 1-sentence repair tip. Highlight safety risks."
+            )
+        )
+
+        try:
+            # Using the asynchronous client 'aio' to prevent blocking the WebSocket
+            response = await self.client.aio.models.generate_content(
+                model=TEXT_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    # High thinking level triggers the Gemini 3 deep reasoning
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level=types.ThinkingLevel.HIGH
+                    )
+                )
+            )
+            return response.text
+        except Exception as e:
+            print(f">>> [SDK ERROR] {e}", flush=True)
+            return None

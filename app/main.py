@@ -4,79 +4,57 @@ import logging
 import base64
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from app.gemini_client import GeminiClient
-from app.session_manager import SessionManager
 
+# We use standard print with flush=True because it's harder for Render to buffer
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-sessions = SessionManager()
-gemini_client = GeminiClient()
-
-# Energy threshold for voice detection (adjust if too sensitive)
-SILENCE_THRESHOLD = 300 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    session_id = sessions.create()
+    print(">>> WS ACCEPTED: Connection established with Spectacles", flush=True)
     
-    latest_video_frame = None
-    audio_accumulator = []
-    
-    logger.info(f"Session {session_id} Started - Adaptive 'Event' Mode")
-
     try:
         while True:
-            raw_msg = await ws.receive_text()
+            # 1. Listen for ANY type of message (Text or Bytes)
+            message = await ws.receive()
             
-            # --- PACKET REPAIR (Crucial for 100ms frequency) ---
-            if "}{" in raw_msg:
-                raw_msg = "{" + raw_msg.split("}{")[-1]
-            
-            try:
-                data = json.loads(raw_msg)
-            except:
+            if "text" in message:
+                raw_msg = message["text"]
+                print(f">>> RECEIVED TEXT: {len(raw_msg)} chars", flush=True)
+            elif "bytes" in message:
+                raw_msg = message["bytes"].decode('utf-8', errors='ignore')
+                print(f">>> RECEIVED BYTES: {len(message['bytes'])} bytes", flush=True)
+            else:
+                print(f">>> RECEIVED UNKNOWN TYPE: {message.keys()}", flush=True)
                 continue
 
-            # --- ADAPTIVE KEY DETECTION ---
-            # Prioritizes 'event' as requested
-            msg_type = data.get("event") or data.get("type")
-            payload = data.get("data") or data.get("value")
+            # 2. Immediate Check: Can we see the raw string?
+            # If you don't see this in logs, data isn't reaching the script
+            print(f">>> RAW DATA START: {raw_msg[:100]}", flush=True)
 
-            # Route 1: Video (Every 1500ms)
-            if msg_type in ["video", "video_b64", "camera"]:
-                latest_video_frame = payload
-            
-            # Route 2: Audio (Accumulate 100ms chunks into 2s)
-            elif msg_type in ["audio", "audio_b64", "voice"]:
-                if not payload: continue
+            # 3. Packet Repair
+            if "}{" in raw_msg:
+                raw_msg = "{" + raw_msg.split("}{")[-1]
+
+            try:
+                data = json.loads(raw_msg)
+                event_type = data.get("event") or data.get("type")
+                print(f">>> PARSED EVENT: {event_type}", flush=True)
                 
-                # --- SILENCE DETECTION ---
-                try:
-                    audio_bytes = base64.b64decode(payload)
-                    audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                    if np.abs(audio_data).mean() > SILENCE_THRESHOLD:
-                        audio_accumulator.append(payload)
-                except Exception as e:
-                    logger.error(f"Decode Error: {e}")
-
-                if len(audio_accumulator) >= 20: # 20 chunks = 2 seconds
-                    chunks_to_send = list(audio_accumulator)
-                    audio_accumulator = []
-                    asyncio.create_task(
-                        generate_ai_response(ws, chunks_to_send, latest_video_frame)
-                    )
-
-            elif msg_type == "ping":
-                await ws.send_text(json.dumps({"event": "pong"}))
+                # Simple Echo back to Spectacles to prove it's working
+                await ws.send_text(json.dumps({"event": "ack", "received": event_type}))
+                
+            except Exception as json_err:
+                print(f">>> JSON ERROR: {json_err} | DATA: {raw_msg[:50]}", flush=True)
 
     except WebSocketDisconnect:
-        logger.info(f"Session {session_id} disconnected.")
-    finally:
-        sessions.remove(session_id)
-
+        print(">>> WS DISCONNECT: Spectacles lost connection", flush=True)
+    except Exception as e:
+        print(f">>> CRITICAL RUNTIME ERROR: {e}", flush=True)
+        
 async def generate_ai_response(ws: WebSocket, audio_list: list, image: str):
     try:
         # Get AI Reasoning
@@ -100,3 +78,4 @@ async def generate_ai_response(ws: WebSocket, audio_list: list, image: str):
         logger.info(f"AI Responded: {ai_text[:40]}...")
     except Exception as e:
         logger.error(f"AI Task Error: {e}")
+

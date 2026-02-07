@@ -1,114 +1,63 @@
+# main.py
+import os
 import json
 import logging
-import time
-from typing import Dict, Any
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
-from .config import LOG_LEVEL
+from .config import TEXT_MODEL, IMAGE_MODEL, AUDIO_SAMPLE_RATE, AUDIO_MIME_TYPE
 from .gemini_client import GeminiClient
-from .session_manager import SessionManager
+from .session_manager import SessionManager  # imported now
 
-# ===== Logging =====
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+logging.basicConfig(level=logging.INFO)
+
+app = FastAPI(title="AI Handyman Backend")
+
+# Gemini client (multi-model)
+gemini_client = GeminiClient(
+    text_model=TEXT_MODEL,
+    image_model=IMAGE_MODEL,
+    audio_sample_rate=AUDIO_SAMPLE_RATE,
+    audio_mime_type=AUDIO_MIME_TYPE,
 )
-logger = logging.getLogger("main")
-
-# ===== App =====
-app = FastAPI()
-gemini = GeminiClient()
-sessions = SessionManager()
-
-# ===== Example tool (multi-step function calling) =====
-TOOLS = [
-    {
-        "function_declarations": [
-            {
-                "name": "identify_object",
-                "description": "Identify an object in an image",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "object_name": {"type": "string"}
-                    },
-                    "required": ["object_name"]
-                }
-            }
-        ]
-    }
-]
-
-
-@app.get("/")
-def health():
-    return {"status": "ok"}
-
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    session_id = sessions.create()
-    logger.info(f"[WS] Connected session={session_id}")
-
-    history = []
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    logging.info("WebSocket connected")
+    session = SessionManager(ws=websocket)
 
     try:
-        while True:
-            raw = await ws.receive_text()
-            logger.info(f"[WS] Received payload size={len(raw)}")
+        while session.active:
+            msg = await websocket.receive_text()
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                logging.error(
+                    f"Invalid JSON received (likely concatenated frames). Length={len(msg)}"
+                )
+                continue
 
-            data: Dict[str, Any] = json.loads(raw)
-
-            response = gemini.generate(
-                text=data.get("text"),
-                image_b64=data.get("image"),
-                audio_b64=data.get("audio"),
-                tools=TOOLS,
-                history=history
-            )
-
-            logger.info("[Gemini] Response received")
-
-            # ===== Handle function calls =====
-            candidate = response["candidates"][0]
-            content = candidate["content"]
-
-            history.append(content)
-
-            if "parts" in content:
-                for part in content["parts"]:
-                    if "functionCall" in part:
-                        fn = part["functionCall"]
-                        logger.info(f"[Gemini] Function call: {fn}")
-
-                        # Example function execution
-                        if fn["name"] == "identify_object":
-                            result = {
-                                "object": fn["args"]["object_name"],
-                                "confidence": 0.9
-                            }
-
-                            history.append({
-                                "role": "tool",
-                                "parts": [{
-                                    "functionResponse": {
-                                        "name": fn["name"],
-                                        "response": result
-                                    }
-                                }]
-                            })
-
-                            followup = gemini.generate(history=history)
-                            await ws.send_text(json.dumps(followup))
-                            continue
-
-            await ws.send_text(json.dumps(response))
+            msg_type = data.get("type")
+            if msg_type == "audio":
+                b64_audio = data.get("pcm_b64", "")
+                if b64_audio:
+                    await gemini_client.send_audio(b64_audio)
+                    logging.info(f"Processed audio chunk size={len(b64_audio)}")
+            elif msg_type == "image":
+                b64_image = data.get("image_b64", "")
+                if b64_image:
+                    await gemini_client.send_image(b64_image)
+                    logging.info(f"Processed image size={len(b64_image)}")
+            elif msg_type == "text":
+                prompt = data.get("prompt", "")
+                if prompt:
+                    response = await gemini_client.send_text(prompt)
+                    await websocket.send_text(json.dumps({"type": "text_response", "response": response}))
+            else:
+                logging.warning(f"Unknown message type: {msg_type}")
 
     except WebSocketDisconnect:
-        logger.info(f"[WS] Disconnected session={session_id}")
+        logging.info("WebSocket disconnected")
+        await session.close()
     except Exception as e:
-        logger.exception("[WS] Fatal error")
-    finally:
-        sessions.close(session_id)
+        logging.exception("WebSocket fatal error")
+        await session.close()

@@ -1,40 +1,42 @@
-# gemini_client.py
-import json
-import requests
-from .config import GEMINI_API_URL, GEMINI_API_KEY
+import httpx
+from config import GEMINI_API_KEY, GEMINI_BASE_URL, GEMINI_MODEL
 
 class GeminiClient:
     def __init__(self):
-        self.api_url = GEMINI_API_URL
-        self.api_key = GEMINI_API_KEY
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY not set")
+        if not GEMINI_BASE_URL:
+            raise RuntimeError("GEMINI_BASE_URL not set")
 
-    def send_audio(self, conversation: list, audio_b64: str):
+        self.headers = {
+            "Authorization": f"Bearer {GEMINI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+    async def send_multimodal(self, parts: list[dict]):
         """
-        Sends audio to Gemini multi-step API
+        parts example:
+        [
+          {"inline_data": {"mime_type": "image/jpeg", "data": "<b64>"}},
+          {"inline_data": {"mime_type": "audio/pcm", "data": "<b64>"}}
+        ]
         """
         payload = {
-            "conversation": conversation,
-            "audio": {
-                "mime_type": "audio/pcm;rate=16000",
-                "data": audio_b64
-            }
+            "model": GEMINI_MODEL,
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": parts
+                }
+            ]
         }
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.post(f"{self.api_url}/multi_step", json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()
 
-    def send_text_or_image(self, conversation: list, image_b64: str = None):
-        """
-        Sends text or image input to Gemini multi-step API
-        """
-        payload = {"conversation": conversation}
-        if image_b64:
-            payload["image"] = {
-                "mime_type": "image/png",
-                "data": image_b64
-            }
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.post(f"{self.api_url}/multi_step", json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()
+        async with httpx.AsyncClient(timeout=None) as client:
+            resp = await client.post(
+                GEMINI_BASE_URL,
+                headers=self.headers,
+                json=payload
+            )
+            resp.raise_for_status()
+            return resp.json()
+

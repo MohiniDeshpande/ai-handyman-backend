@@ -3,7 +3,7 @@ import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 # Your utility imports
-from .utils import pcm16_to_base64, needs_image, image_response, text_response
+from .audio_utils import pcm16_to_base64, needs_image, image_response, text_response
 from .session_manager import SessionManager  # Make sure this exists
 
 # Session constants
@@ -167,5 +167,6 @@ async def websocket_endpoint(ws: WebSocket):
 
     except Exception as e:
         await ws.close()
+
 
 

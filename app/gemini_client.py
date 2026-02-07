@@ -1,5 +1,6 @@
 import requests
-from typing import Optional, Dict, Any
+import logging
+from typing import Dict, Any, Optional, List
 
 from .config import (
     GEMINI_API_KEY,
@@ -9,50 +10,50 @@ from .config import (
     AUDIO_MIME_TYPE,
 )
 
-HEADERS = {
-    "Content-Type": "application/json"
-}
+logger = logging.getLogger(__name__)
+
+HEADERS = {"Content-Type": "application/json"}
 
 
 class GeminiClient:
     def __init__(self):
         self.api_key = GEMINI_API_KEY
 
-    def _post(self, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Low-level POST to Gemini generateContent endpoint
-        """
-        url = f"{GEMINI_BASE_URL}/{model}:generateContent"
+    def _url(self, model: str) -> str:
+        return f"{GEMINI_BASE_URL}/{model}:generateContent"
 
-        response = requests.post(
-            url,
+    def _post(self, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"[Gemini] Sending request to model={model}")
+
+        res = requests.post(
+            self._url(model),
             headers=HEADERS,
             params={"key": self.api_key},
             json=payload,
             timeout=30,
         )
 
-        response.raise_for_status()
-        return response.json()
+        logger.info(f"[Gemini] Status={res.status_code}")
+
+        if not res.ok:
+            logger.error(res.text)
+            res.raise_for_status()
+
+        return res.json()
 
     def generate(
         self,
         text: Optional[str] = None,
         image_b64: Optional[str] = None,
         audio_b64: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """
-        Unified multimodal call.
-        - Uses IMAGE_MODEL if image is present
-        - Otherwise uses TEXT_MODEL
-        """
 
         parts = []
 
         if text:
-            parts.append({
-                "text": text
-            })
+            parts.append({"text": text})
 
         if image_b64:
             parts.append({
@@ -71,17 +72,25 @@ class GeminiClient:
             })
 
         if not parts:
-            raise ValueError("No content provided to Gemini")
+            raise ValueError("No input provided to Gemini")
 
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": parts
-                }
-            ]
+        contents = history[:] if history else []
+        contents.append({
+            "role": "user",
+            "parts": parts
+        })
+
+        payload: Dict[str, Any] = {
+            "contents": contents
         }
+
+        if tools:
+            payload["tools"] = tools
+            payload["tool_config"] = {
+                "function_calling_config": {
+                    "mode": "AUTO"
+                }
+            }
 
         model = IMAGE_MODEL if image_b64 else TEXT_MODEL
         return self._post(model, payload)
-

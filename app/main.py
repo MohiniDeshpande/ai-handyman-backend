@@ -2,8 +2,10 @@ import json
 import asyncio
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from .session_manager import SessionManager
-from .gemini_client import GeminiClient
+
+from app.session_manager import SessionManager
+from app.gemini_client import GeminiClient
+from app.config import SESSION_TIMEOUT_SECONDS, WARNING_BEFORE_CLOSE_SECONDS
 
 # Setup logging to see what's happening in real-time
 logging.basicConfig(level=logging.INFO)
@@ -91,3 +93,4 @@ async def websocket_endpoint(ws: WebSocket):
         logger.error(f"Unexpected error in session {session_id}: {e}")
     finally:
         sessions.remove(session_id)
+

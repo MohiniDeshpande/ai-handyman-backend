@@ -1,81 +1,108 @@
 import json
 import asyncio
-import logging
+import re
 import base64
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
-# We use standard print with flush=True because it's harder for Render to buffer
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from app.gemini_client import GeminiClient
 
 app = FastAPI()
+gemini_client = GeminiClient()
+
+# This pattern carves out valid JSON objects from the corrupted string jams
+JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
+SILENCE_THRESHOLD = 350 # Ignores background noise
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    print(">>> WS ACCEPTED: Connection established with Spectacles", flush=True)
+    print(">>> [CONNECTED] Spectacles Link Active", flush=True)
     
+    latest_video = None
+    audio_buffer = []
+
     try:
         while True:
-            # 1. Listen for ANY type of message (Text or Bytes)
+            # Receive handles both Text and Binary frames automatically
             message = await ws.receive()
-            
+            raw_msg = ""
+
             if "text" in message:
                 raw_msg = message["text"]
-                print(f">>> RECEIVED TEXT: {len(raw_msg)} chars", flush=True)
             elif "bytes" in message:
                 raw_msg = message["bytes"].decode('utf-8', errors='ignore')
-                print(f">>> RECEIVED BYTES: {len(message['bytes'])} bytes", flush=True)
-            else:
-                print(f">>> RECEIVED UNKNOWN TYPE: {message.keys()}", flush=True)
+
+            if not raw_msg:
                 continue
 
-            # 2. Immediate Check: Can we see the raw string?
-            # If you don't see this in logs, data isn't reaching the script
-            print(f">>> RAW DATA START: {raw_msg[:100]}", flush=True)
+            # --- DATA CLEANING (Greedy Splitter) ---
+            found_objects = JSON_PATTERN.findall(raw_msg)
+            
+            for obj_str in found_objects:
+                try:
+                    # Final safety trim to ensure a clean JSON parse
+                    clean_json = obj_str.strip()
+                    data = json.loads(clean_json)
+                    
+                    msg_type = data.get("event") or data.get("type")
+                    payload = data.get("data") or data.get("value")
 
-            # 3. Packet Repair
-            if "}{" in raw_msg:
-                raw_msg = "{" + raw_msg.split("}{")[-1]
+                    # Route Video Frames
+                    if msg_type in ["video_b64", "video"]:
+                        latest_video = payload
+                        # Log frame reception without spamming
+                        if len(payload) > 500000:
+                            print(f">>> [DATA] Large Video Frame Cached ({len(payload)} chars)", flush=True)
+                    
+                    # Route Audio Chunks
+                    elif msg_type in ["audio_b64", "audio"]:
+                        # Simple Voice Activity Detection
+                        try:
+                            audio_bytes = base64.b64decode(payload)
+                            audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+                            if np.abs(audio_data).mean() > SILENCE_THRESHOLD:
+                                audio_buffer.append(payload)
+                        except:
+                            pass
 
-            try:
-                data = json.loads(raw_msg)
-                event_type = data.get("event") or data.get("type")
-                print(f">>> PARSED EVENT: {event_type}", flush=True)
-                
-                # Simple Echo back to Spectacles to prove it's working
-                await ws.send_text(json.dumps({"event": "ack", "received": event_type}))
-                
-            except Exception as json_err:
-                print(f">>> JSON ERROR: {json_err} | DATA: {raw_msg[:50]}", flush=True)
+                        # Trigger Gemini after 20 chunks (~2 seconds of speech)
+                        if len(audio_buffer) >= 20:
+                            current_audio_batch = list(audio_buffer)
+                            audio_buffer = [] # Reset immediately
+                            print(">>> [AI] Voice detected. Requesting Gemini analysis...", flush=True)
+                            asyncio.create_task(
+                                run_pipeline(ws, current_audio_batch, latest_video)
+                            )
+
+                except Exception:
+                    # Skip corrupted fragments silently
+                    continue
 
     except WebSocketDisconnect:
-        print(">>> WS DISCONNECT: Spectacles lost connection", flush=True)
-    except Exception as e:
-        print(f">>> CRITICAL RUNTIME ERROR: {e}", flush=True)
-        
-async def generate_ai_response(ws: WebSocket, audio_list: list, image: str):
-    try:
-        # Get AI Reasoning
-        result = await gemini_client.analyze_handyman_context(audio_list, image)
-        if not result: return
+        print(">>> [DISCONNECTED] Spectacles link lost.", flush=True)
 
+async def run_pipeline(ws: WebSocket, audio: list, image: str):
+    """Processes AI results and sends them back to the Spectacles bridge."""
+    try:
+        result = await gemini_client.analyze_handyman_context(audio, image)
+        if not result:
+            return
+
+        # Extract AI response text
         ai_text = result['candidates'][0]['content']['parts'][0].get('text', '')
         
-        # --- RETURN BOTH FORMATS (Type & Event) ---
-        # This ensures the HandymanBackendBridge.ts always catches the result
-        response = {
-            "type": "ai_result",
-            "event": "ai_result",
-            "data": {
-                "speech_text": ai_text,
-                "safety_warning": "SAFETY" in ai_text.upper(),
-                "request_better_view": "VIEW" in ai_text.upper()
+        if ai_text:
+            # Matches HandyBackendBridge.ts expectations
+            response = {
+                "event": "ai_result",
+                "type": "ai_result",
+                "data": {
+                    "speech_text": ai_text,
+                    "safety_warning": "SAFETY" in ai_text.upper()
+                }
             }
-        }
-        await ws.send_text(json.dumps(response))
-        logger.info(f"AI Responded: {ai_text[:40]}...")
-    except Exception as e:
-        logger.error(f"AI Task Error: {e}")
+            await ws.send_text(json.dumps(response))
+            print(f">>> [AI RESPONSE] {ai_text[:60]}...", flush=True)
 
+    except Exception as e:
+        print(f">>> [PIPELINE ERROR] {e}", flush=True)

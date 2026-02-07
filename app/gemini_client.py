@@ -1,7 +1,7 @@
 # gemini_client.py
 import json
 import requests
-from config import GEMINI_API_URL, GEMINI_API_KEY
+from .config import GEMINI_API_URL, GEMINI_API_KEY
 
 class GeminiClient:
     def __init__(self):

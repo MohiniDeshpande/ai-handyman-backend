@@ -9,12 +9,11 @@ from app.config import SILENCE_THRESHOLD, AUDIO_TRIGGER_CHUNKS
 
 app = FastAPI()
 gemini_client = GeminiClient()
-# Regex to extract JSON objects from potentially corrupted/concatenated packets
 JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
 
 @app.get("/")
 async def health_check():
-    return {"status": "Gemini 3 Pro Bridge Online"}
+    return {"status": "Gemini 3 Pro Bridge Online", "engine": "google-genai-2026"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
@@ -26,14 +25,18 @@ async def websocket_endpoint(ws: WebSocket):
 
     try:
         while True:
-            message = await ws.receive()
+            # Using try/except inside the loop for Python 3.13 signal handling
+            try:
+                message = await ws.receive()
+            except Exception:
+                break
+
             raw_msg = ""
             if "text" in message: raw_msg = message["text"]
             elif "bytes" in message: raw_msg = message["bytes"].decode('utf-8', errors='ignore')
 
             if not raw_msg: continue
 
-            # Clean and parse messages
             found_objects = JSON_PATTERN.findall(raw_msg)
             for obj_str in found_objects:
                 try:
@@ -45,28 +48,30 @@ async def websocket_endpoint(ws: WebSocket):
                         latest_video = payload
                     
                     elif msg_type in ["audio_b64", "audio"]:
-                        # Simple Voice Activity Detection
                         audio_bytes = base64.b64decode(payload)
                         audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
                         if np.abs(audio_data).mean() > SILENCE_THRESHOLD:
                             audio_buffer.append(payload)
 
-                        # Trigger SDK call when we have ~2 seconds of audio
                         if len(audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
                             current_batch = list(audio_buffer)
-                            audio_buffer = [] # Reset buffer
-                            print(">>> [AI] Voice detected. Reasoning with Gemini 3 Pro...", flush=True)
+                            audio_buffer = []
+                            # Fire-and-forget the AI task
                             asyncio.create_task(process_ai_request(ws, current_batch, latest_video))
-
                 except: continue
     except WebSocketDisconnect:
         print(">>> [DISCONNECTED]", flush=True)
 
 async def process_ai_request(ws: WebSocket, audio: list, image: str):
+    # The SDK 'aio' call we set up in gemini_client.py
     ai_text = await gemini_client.analyze_handyman_context(audio, image)
     if ai_text:
-        await ws.send_text(json.dumps({
-            "event": "ai_result",
-            "data": {"speech_text": ai_text}
-        }))
-        print(f">>> [AI RESPONSE] {ai_text}", flush=True)
+        try:
+            await ws.send_text(json.dumps({
+                "event": "ai_result",
+                "data": {"speech_text": ai_text}
+            }))
+            print(f">>> [AI RESPONSE] {ai_text}", flush=True)
+        except:
+            pass
+            

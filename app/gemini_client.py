@@ -12,25 +12,16 @@ class GeminiClient:
 
     async def analyze_handyman_context(self, audio_list: list, image_b64: str = None):
         parts = []
-        
-        # 1. Image context
         if image_b64:
             parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image_b64}})
-
-        # 2. Sequential audio chunks
         for chunk in audio_list:
-            parts.append({
-                "inline_data": {
-                    "mime_type": "audio/pcm;rate=16000",
-                    "data": chunk
-                }
-            })
+            parts.append({"inline_data": {"mime_type": "audio/pcm;rate=16000", "data": chunk}})
 
-        # 3. System Instruction
         parts.append({
             "text": (
-                "You are an AI Handyman. Using the image and audio, provide short, "
-                "safe repair steps. Use 'SAFETY WARNING' if you see hazards."
+                "You are an AI Handyman expert. Analyze the view and audio. "
+                "Provide short, safe, step-by-step repair advice. "
+                "Include 'SAFETY' if dangerous, and 'VIEW' if blurry."
             )
         })
 
@@ -44,5 +35,5 @@ class GeminiClient:
                 response = await client.post(self.url, json=payload, timeout=30.0)
                 return response.json() if response.status_code == 200 else None
             except Exception as e:
-                logger.error(f"Gemini Request Failed: {e}")
+                logger.error(f"Gemini API Error: {e}")
                 return None

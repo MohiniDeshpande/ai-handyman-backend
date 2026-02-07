@@ -1,38 +1,37 @@
+import os
 import requests
-from .config import (
-    GEMINI_API_KEY,
-    GEMINI_BASE_URL,
-    TEXT_MODEL,
-    IMAGE_MODEL
-)
 
-HEADERS = {
-    "Content-Type": "application/json"
-}
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-def call_gemini(model: str, contents: list):
-    url = f"{GEMINI_BASE_URL}/{model}:generateContent?key={GEMINI_API_KEY}"
+TEXT_MODEL = "models/gemini-3-pro-preview"
+IMAGE_MODEL = "models/gemini-3-pro-image-preview"
+
+BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def _call(model: str, contents: list):
+    url = f"{BASE_URL}/{model}:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
-        "contents": contents
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.4
+        }
     }
 
-    response = requests.post(url, headers=HEADERS, json=payload)
-    response.raise_for_status()
-    return response.json()
+    resp = requests.post(url, json=payload, timeout=60)
+    resp.raise_for_status()
+    return resp.json()
 
 
-def text_response(conversation_parts):
-    return call_gemini(TEXT_MODEL, conversation_parts)
+def call_text_model(conversation):
+    return _call(TEXT_MODEL, conversation)
 
 
-def image_response(conversation_parts):
-    payload = conversation_parts.copy()
-    payload.append({
+def call_image_model(conversation):
+   
+    conversation = conversation + [{
         "role": "user",
-        "parts": [{
-            "text": "Generate a realistic JPEG image based on the above context."
-        }]
-    })
-
-    return call_gemini(IMAGE_MODEL, payload)
+        "parts": [{"text": "Generate an image based on the above context."}]
+    }]
+    return _call(IMAGE_MODEL, conversation)

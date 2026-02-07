@@ -16,15 +16,25 @@ gemini_client = GeminiClient()
 
 def repair_json_stream(raw_data: str):
     """
-    Fixes the 'Extra data' error by extracting the last complete JSON object 
-    if multiple objects are stuck together in the buffer.
+    A more robust way to handle concatenated JSON strings without using 
+    recursive regex that crashes Python's 're' module.
     """
-    # Find all top-level JSON objects {}
-    objs = re.findall(r'\{(?:[^{}]|(?R))*\}', raw_data)
-    if objs:
-        # We take the most recent one (the last one in the buffer)
-        return json.loads(objs[-1])
-    return json.loads(raw_data)
+    raw_data = raw_data.strip()
+    if not raw_data:
+        return None
+        
+    # If the data is valid JSON on its own, return it
+    try:
+        return json.loads(raw_data)
+    except json.JSONDecodeError:
+        # If it failed, check if multiple objects are stuck together (e.g., }{)
+        if "}{" in raw_data:
+            # We take the LAST complete object in the buffer
+            # This ensures the AI sees the most recent frame/audio
+            parts = raw_data.split("}{")
+            last_obj = "{" + parts[-1]
+            return json.loads(last_obj)
+        raise
 
 async def handle_ai_logic(ws: WebSocket, data: dict, latest_frame: str):
     """Handles the heavy lifting in the background."""
@@ -93,3 +103,4 @@ async def websocket_endpoint(ws: WebSocket):
         logger.error(f"Unexpected error in session {session_id}: {e}")
     finally:
         sessions.remove(session_id)
+

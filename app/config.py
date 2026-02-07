@@ -4,7 +4,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 
-GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta"
 TEXT_MODEL = "models/gemini-3-pro-preview"
 IMAGE_MODEL = "models/gemini-3-pro-image-preview"
 

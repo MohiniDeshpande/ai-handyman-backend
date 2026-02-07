@@ -1,9 +1,8 @@
-def needs_image(user_text: str) -> bool:
-    triggers = [
-        "what does it look like",
-        "show me",
-        "generate an image",
-        "draw",
-        "picture"
-    ]
-    return any(t in user_text.lower() for t in triggers)
+# router.py
+
+def needs_image(text: str) -> bool:
+    """
+    Determine if user prompt requires image generation
+    """
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in ["draw", "generate image", "picture", "illustrate"])

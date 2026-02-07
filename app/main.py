@@ -1,109 +1,86 @@
-import asyncio
 import json
-from fastapi import FastAPI, WebSocket
+import asyncio
+import logging
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+from .audio_utils import prepare_audio_frame
+from .image_utils import parse_image_from_json
 from .session_manager import SessionManager
-from .gemini_client import call_text_model, call_image_model
-from .audio_utils import needs_image
+from .gemini_client import GeminiClient
+from .router import needs_image
+from .config import SESSION_TIMEOUT_SECONDS, WARNING_BEFORE_CLOSE_SECONDS
 
 app = FastAPI()
+logging.basicConfig(level=logging.INFO)
 
-SESSION_TIMEOUT_SECONDS = 60
-WARNING_BEFORE_CLOSE_SECONDS = 15
-
+gemini = GeminiClient()
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
+    logging.info("[WS] Connection accepted")
 
-    session = SessionManager(
-        ws,
-        SESSION_TIMEOUT_SECONDS,
-        WARNING_BEFORE_CLOSE_SECONDS
-    )
+    session = SessionManager(ws, SESSION_TIMEOUT_SECONDS, WARNING_BEFORE_CLOSE_SECONDS)
     asyncio.create_task(session.monitor())
 
-    # buffers for fusion
     conversation = []
-    pending_audio = []
-    pending_image = None
 
     try:
         while True:
             msg = await ws.receive()
-                session.touch()
-                
-                if msg["type"] == "websocket.receive":
-                
-                    if "bytes" in msg and msg["bytes"] is not None:
-                        # RAW PCM AUDIO (Spectacles mic)
-                        audio_b64 = base64.b64encode(msg["bytes"]).decode("utf-8")
-                        pending_audio.append({
-                            "inline_data": {
-                                "mime_type": "audio/pcm;rate=16000",
-                                "data": audio_b64
-                            }
-                        })
-                
-                    elif "text" in msg and msg["text"] is not None:
-                        payload = json.loads(msg["text"])
-                        msg_type = payload.get("type")
-                
-                        if msg_type == "image":
-                            pending_image = {
-                                "inline_data": {
-                                    "mime_type": payload["mime_type"],
-                                    "data": payload["data"]
-                                }
-                            }
-                
-                        elif msg_type == "text":
+            session.touch()
 
-            
-            # ---- IMAGE ----
-            elif msg_type == "image":
-                pending_image = {
-                    "inline_data": {
-                        "mime_type": payload["mime_type"],
-                        "data": payload["data"]
-                    }
-                }
+            if msg["type"] != "websocket.receive":
+                continue
 
-            # ---- TEXT (flush trigger) ----
-            elif msg_type == "text":
-                parts = []
+            data = msg.get("bytes") or msg.get("text")
+            if not data:
+                continue
 
-                if pending_image:
-                    parts.append(pending_image)
-
-                parts.extend(pending_audio)
-
-                parts.append({"text": payload["text"]})
-
-                user_turn = {
+            # Audio PCM bytes
+            if isinstance(data, bytes):
+                logging.info(f"[WS] Received audio bytes of length {len(data)}")
+                b64_audio = prepare_audio_frame(data)
+                conversation.append({
                     "role": "user",
-                    "parts": parts
-                }
-
-                conversation.append(user_turn)
-
-                # routing logic
-                if needs_image(payload["text"]):
-                    result = call_image_model(conversation)
-                else:
-                    result = call_text_model(conversation)
-
-                model_reply = result["candidates"][0]["content"]
-                conversation.append(model_reply)
-
-                await ws.send_json({
-                    "type": "model_response",
-                    "content": model_reply
+                    "parts": [{"inline_data": {"mime_type": "audio/pcm;rate=16000", "data": b64_audio}}]
                 })
 
-                # reset fusion buffers
-                pending_audio = []
-                pending_image = None
+            # JSON => image or text
+            else:
+                parsed = json.loads(data)
+                if "image" in parsed:
+                    logging.info("[WS] Received image JSON")
+                    img_bytes = parse_image_from_json(data)
+                    conversation.append({
+                        "role": "user",
+                        "parts": [{"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(img_bytes).decode()}}]
+                    })
+                elif "text" in parsed:
+                    user_text = parsed["text"]
+                    logging.info(f"[WS] Received text: {user_text}")
+                    conversation.append({"role": "user", "parts": [{"text": user_text}]})
+                else:
+                    logging.warning("[WS] Unknown payload received")
+                    continue
 
-    except Exception:
+            # Determine if Gemini needs image processing
+            if needs_image(conversation[-1].get("parts", [{}])[0].get("text", "")):
+                logging.info("[WS] Sending multi-step request to Gemini with image")
+                result = await gemini.multi_step_response(conversation)
+            else:
+                logging.info("[WS] Sending multi-step request to Gemini with text/audio")
+                result = await gemini.multi_step_response(conversation)
+
+            model_reply = result["candidates"][0]["content"]
+            conversation.append(model_reply)
+
+            await ws.send_json({"type": "model_response", "content": model_reply})
+            logging.info("[WS] Sent model response")
+
+    except WebSocketDisconnect:
+        logging.info("[WS] Connection closed by client")
+    except Exception as e:
+        logging.error(f"[WS] Exception: {e}")
         await ws.close()
-

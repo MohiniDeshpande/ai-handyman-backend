@@ -1,80 +1,69 @@
 import json
 import asyncio
-import re
-import base64
-import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from app.gemini_client import GeminiClient
-from app.config import SILENCE_THRESHOLD, AUDIO_TRIGGER_CHUNKS
+from app.session_manager import SessionManager
 
 app = FastAPI()
 gemini_client = GeminiClient()
-JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
+manager = SessionManager()
 
 @app.get("/")
-async def health_check():
-    return {"status": "Gemini 3 Pro Bridge Online", "engine": "google-genai-2026"}
+async def health():
+    return {"status": "Handyman API Online", "mode": "Push-to-Talk"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    print(">>> [CONNECTED] Spectacles 3 Pro Active", flush=True)
+    session = manager.get_or_create()
     
-    latest_video = None
-    audio_buffer = []
-
     try:
         while True:
-            # Using try/except inside the loop for Python 3.13 signal handling
+            # Handle incoming JSON from Spectacles
             try:
-                message = await ws.receive()
-            except Exception:
-                break
+                data = await ws.receive_json()
+            except: break
 
-            raw_msg = ""
-            if "text" in message: raw_msg = message["text"]
-            elif "bytes" in message: raw_msg = message["bytes"].decode('utf-8', errors='ignore')
+            msg_type = data.get("type") or data.get("event")
+            payload = data.get("data")
 
-            if not raw_msg: continue
+            # 1. Video Feed (Constant update)
+            if msg_type in ["video", "video_b64"]:
+                session.latest_video = payload
 
-            found_objects = JSON_PATTERN.findall(raw_msg)
-            for obj_str in found_objects:
-                try:
-                    data = json.loads(obj_str.strip())
-                    msg_type = data.get("event") or data.get("type")
-                    payload = data.get("data") or data.get("value")
+            # 2. START PTT (User tapped button)
+            elif msg_type == "start_capture":
+                session.reset_audio()
+                session.is_recording = True
+                print(f">>> [LOG] Recording started for {session.session_id}")
 
-                    if msg_type in ["video_b64", "video"]:
-                        latest_video = payload
-                    
-                    elif msg_type in ["audio_b64", "audio"]:
-                        audio_bytes = base64.b64decode(payload)
-                        audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                        if np.abs(audio_data).mean() > SILENCE_THRESHOLD:
-                            audio_buffer.append(payload)
+            # 3. Stream Audio (Only collect if recording is ON)
+            # Inside your main.py websocket_endpoint loop
+            elif msg_type in ["audio", "audio_b64"]:
+                if session.is_recording:
+                    session.audio_buffer.append(payload)
+                else:
+                    # Ignore audio packets sent while the button isn't pressed
+                    pass
 
-                        if len(audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
-                            current_batch = list(audio_buffer)
-                            audio_buffer = []
-                            # Fire-and-forget the AI task
-                            asyncio.create_task(process_ai_request(ws, current_batch, latest_video))
-                except: continue
+            # 4. STOP PTT (User released button - Trigger AI)
+            elif msg_type == "stop_capture":
+                session.is_recording = False
+                print(f">>> [LOG] Triggering Gemini 3 Pro for {session.session_id}...")
+                
+                # Await the response (blocking the loop for this user until finished)
+                ai_text = await gemini_client.analyze_handyman_context(
+                    session.audio_buffer, session.latest_video
+                )
+                
+                # Send result back in bridge format
+                if ws.client_state.name == "CONNECTED":
+                    await ws.send_text(json.dumps({
+                        "event": "ai_result", 
+                        "data": {"speech_text": ai_text}
+                    }))
+                
+                session.reset_audio()
+
     except WebSocketDisconnect:
-        print(">>> [DISCONNECTED]", flush=True)
-
-
-async def process_ai_request(ws: WebSocket, audio: list, image: str):
-    ai_text = await gemini_client.analyze_handyman_context(audio, image)
-    
-    if ai_text:
-        payload = {"event": "ai_result", "data": {"speech_text": ai_text}}
-        try:
-            # ONLY send if the connection is still open
-            if ws.client_state.name == "CONNECTED":
-                await ws.send_text(json.dumps(payload))
-        
-        except Exception as e:
-            print(f">>> [SEND ERROR] Connection lost while sending: {e}")
-
-
-
+        manager.remove(session.session_id)

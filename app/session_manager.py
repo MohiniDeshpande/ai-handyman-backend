@@ -1,76 +1,50 @@
-import base64
-import re
+import uuid
 import time
-
-class Session:
-    def __init__(self, session_id):
-        self.session_id = session_id
-        self.audio_buffer = []
-        self.last_frame = None
-        self.history = []  # Stores the conversation turns
-        self.last_activity = time.time()
-
-    def add_data(self, data):
-        """Routes incoming WebSocket JSON to the right buffer."""
-        self.last_activity = time.time()
-        if data.get("type") == "audio":
-            self.audio_buffer.append(data.get("value"))
-        elif data.get("type") == "video":
-            self.last_frame = data.get("value")
-
-    def is_ready_to_ask(self):
-        """
-        Triggers at the 1000ms mark. 
-        Assumes 25 chunks of 40ms each = 1 second of audio.
-        """
-        audio_chunk_count = len(self.audio_buffer)
-        
-        # Log every 5 chunks so you can see it filling up in Render logs
-        if audio_chunk_count % 5 == 0 and audio_chunk_count > 0:
-            print(f"DEBUG: Buffer at {audio_chunk_count}/25 chunks")
-    
-        return audio_chunk_count >= 25
-
-    def get_multimodal_payload(self):
-        """Point 1 & 6: Combines audio chunks into one clean byte stream."""
-        combined_audio = b"".join([base64.b64decode(c) for c in self.audio_buffer])
-        image_bytes = base64.b64decode(self.last_frame) if self.last_frame else None
-        
-        # Clear buffer after grabbing payload to prevent repeat-firing
-        self.audio_buffer = [] 
-        return combined_audio, image_bytes
-
-    def prepare_chunks_for_spectacles(self, text, limit=385):
-        """
-        Point 3, 9: The Savior for 'Error 13'.
-        Splits text into chunks under 400 chars, breaking at sentences.
-        """
-        # Split by punctuation followed by space
-        sentences = re.split(r'(?<=[.!?]) +', text.strip())
-        chunks = []
-        current_chunk = ""
-
-        for s in sentences:
-            if len(current_chunk) + len(s) < limit:
-                current_chunk += (" " + s if current_chunk else s)
-            else:
-                chunks.append(current_chunk.strip())
-                current_chunk = s
-        
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-            
-        return chunks
+from fastapi import WebSocket
 
 class SessionManager:
-    def __init__(self):
+    """
+    Manages WebSocket sessions with timeout support.
+    """
+
+    def __init__(self, timeout_seconds: int = 3600, warning_seconds: int = 60, ws: WebSocket = None):
         self.sessions = {}
+        self.timeout_seconds = timeout_seconds
+        self.warning_seconds = warning_seconds
+        self.ws = ws
+        self.active = True
 
-    def get_or_create(self, session_id):
-        if session_id not in self.sessions:
-            self.sessions[session_id] = Session(session_id)
-        return self.sessions[session_id]
+    def create(self):
+        session_id = str(uuid.uuid4())
+        self.sessions[session_id] = {
+            "created_at": time.time(),
+            "last_activity": time.time()
+        }
+        return session_id
 
-    def delete_session(self, session_id):
+    def get(self, session_id: str):
+        session = self.sessions.get(session_id)
+        if not session:
+            return None
+        # Check timeout
+        if time.time() - session["last_activity"] > self.timeout_seconds:
+            self.remove(session_id)
+            return None
+        session["last_activity"] = time.time()
+        return session
+
+    def remove(self, session_id: str):
         if session_id in self.sessions:
             del self.sessions[session_id]
+
+    def cleanup(self):
+        """Remove expired sessions"""
+        now = time.time()
+        expired = [sid for sid, s in self.sessions.items() if now - s["last_activity"] > self.timeout_seconds]
+        for sid in expired:
+            self.remove(sid)
+
+    async def close(self):
+        self.active = False
+        if self.ws:
+            await self.ws.close()

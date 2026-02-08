@@ -2,9 +2,8 @@ import json
 import asyncio
 import re
 import base64
-import os
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from app.gemini_client import GeminiClient
 from app.config import SILENCE_THRESHOLD, AUDIO_TRIGGER_CHUNKS
 
@@ -12,26 +11,21 @@ app = FastAPI()
 gemini_client = GeminiClient()
 JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
 
-# --- MANDATORY RENDER HEALTH CHECK ---
 @app.get("/")
-@app.head("/")
 async def health_check():
-    """
-    Returns 200 OK for Render's zero-downtime health probes.
-    """
-    return {"status": "online", "engine": "Gemini 3 Pro Handyman"}
+    return {"status": "Gemini 3 Pro Bridge Online", "engine": "google-genai-2026"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    print(">>> [CONNECTED] Spectacles 3 Pro Bridge", flush=True)
+    print(">>> [CONNECTED] Spectacles 3 Pro Active", flush=True)
     
     latest_video = None
     audio_buffer = []
 
     try:
         while True:
-            # Resilient message reception for Python 3.13+
+            # Using try/except inside the loop for Python 3.13 signal handling
             try:
                 message = await ws.receive()
             except Exception:
@@ -43,7 +37,6 @@ async def websocket_endpoint(ws: WebSocket):
 
             if not raw_msg: continue
 
-            # Extract potential JSON objects from the stream
             found_objects = JSON_PATTERN.findall(raw_msg)
             for obj_str in found_objects:
                 try:
@@ -57,38 +50,28 @@ async def websocket_endpoint(ws: WebSocket):
                     elif msg_type in ["audio_b64", "audio"]:
                         audio_bytes = base64.b64decode(payload)
                         audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                        
                         if np.abs(audio_data).mean() > SILENCE_THRESHOLD:
                             audio_buffer.append(payload)
 
-                        # Process when buffer is full
                         if len(audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
                             current_batch = list(audio_buffer)
                             audio_buffer = []
+                            # Fire-and-forget the AI task
                             asyncio.create_task(process_ai_request(ws, current_batch, latest_video))
                 except: continue
-
     except WebSocketDisconnect:
         print(">>> [DISCONNECTED]", flush=True)
 
 async def process_ai_request(ws: WebSocket, audio: list, image: str):
-    """
-    Switching to STREAMING mode to fix the 3-minute latency.
-    """
-    try:
-        # We call the streaming version of the SDK
-        async for chunk in gemini_client.client.aio.models.generate_content_stream(
-            model=TEXT_MODEL,
-            contents=gemini_client.prepare_parts(audio, image),
-            config=types.GenerateContentConfig(temperature=0.0)
-        ):
-            if chunk.text:
-                # Send EACH WORD as it's generated
-                await ws.send_text(json.dumps({
-                    "event": "ai_result",
-                    "data": {"speech_text": chunk.text}
-                }))
-                print(f">>> [STREAMING] {chunk.text}", flush=True)
-                
-    except Exception as e:
-        print(f">>> [LATENCY ERROR] {e}")
+    # Returns the plain text from the SDK's response.text helper
+    ai_text = await gemini_client.analyze_handyman_context(audio, image)
+    
+    if ai_text:
+        # Standard Spectacles bridge format
+        payload = {
+            "event": "ai_result",
+            "data": {"speech_text": ai_text}
+        }
+        await ws.send_text(json.dumps(payload))
+        print(f">>> [AI SUCCESS] {ai_text[:100]}", flush=True)
+

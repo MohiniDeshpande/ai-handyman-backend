@@ -1,42 +1,44 @@
 from google import genai
 from google.genai import types
 
-class GeminiLiveClient:
-    def __init__(self, api_key):
-        self.client = genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
-        self.session = None
+class GeminiClient:
+    def __init__(self, api_key: str):
+        self.client = genai.Client(api_key=api_key)
 
-    async def start_session(self, ws_callback):
+    async def stream_handyman_response(self, ws, audio_list: list, image_b64: str = None):
         """
-        Maintains a live connection to Gemini 3 Pro.
+        Uses Gemini 3 Pro in Streaming Mode with Low Thinking Level 
+        to minimize latency for Spectacles.
         """
-        config = {"response_modalities": ["TEXT"]}
+        parts = []
         
-        async with self.client.aio.live.connect(model="gemini-2.0-flash-exp", config=config) as session:
-            self.session = session
-            # This loop listens for Gemini's voice/text and sends it to the glasses
-            async for message in session.receive():
-                if message.text:
-                    await ws_callback(message.text)
+        # 1. AUDIO (The Question)
+        for chunk in audio_list:
+            parts.append(types.Part.from_bytes(data=base64.b64decode(chunk), mime_type="audio/pcm"))
 
-    async def send_to_gemini(self, audio_chunk_b64, image_b64=None):
-        """
-        Immediately forwards whatever the glasses see/hear.
-        No more waiting for batches!
-        """
-        if not self.session: return
-        
-        # Send audio as it arrives (raw bytes)
-        await self.session.send(
-            input=types.LiveClientContent(
-                parts=[types.Part.from_bytes(data=audio_chunk_b64, mime_type="audio/pcm")]
-            )
-        )
-        
-        # Send image if available (limit to 1 frame per second to save bandwidth)
+        # 2. IMAGE (The Context)
         if image_b64:
-            await self.session.send(
-                input=types.LiveClientContent(
-                    parts=[types.Part.from_bytes(data=image_b64, mime_type="image/jpeg")]
+            parts.append(types.Part.from_bytes(data=base64.b64decode(image_b64), mime_type="image/jpeg"))
+
+        # 3. PROMPT
+        parts.append(types.Part.from_text(text="You are an expert handyman. Answer the user's question immediately and briefly based on the image."))
+
+        try:
+            # We use generate_content_stream for immediate feedback
+            async for chunk in self.client.aio.models.generate_content_stream(
+                model="gemini-3-pro-preview",
+                contents=[types.Content(role="user", parts=parts)],
+                config=types.GenerateContentConfig(
+                    # CRITICAL: This reduces the "thinking" time for Gemini 3 Pro
+                    thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+                    temperature=0.1
                 )
-            )
+            ):
+                if chunk.text:
+                    # Forward EACH WORD to spectacles instantly
+                    await ws.send_text(json.dumps({
+                        "event": "ai_result",
+                        "data": {"speech_text": chunk.text}
+                    }))
+        except Exception as e:
+            print(f"Error: {e}")

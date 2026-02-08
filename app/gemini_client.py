@@ -1,33 +1,42 @@
 from google import genai
 from google.genai import types
-import os
 
-class GeminiClient:
-    def __init__(self):
-        self.client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-        self.model_id = "gemini-3-pro-preview"
+class GeminiLiveClient:
+    def __init__(self, api_key):
+        self.client = genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
+        self.session = None
 
-    async def ask_foreman(self, audio_bytes, image_bytes, history):
-        # Construct the multimodal parts
-        parts = [
-            types.Part.from_bytes(data=audio_bytes, mime_type="audio/pcm"),
-            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-            "You are the Foreman, a helpful handyman. Briefly explain what to do."
-        ]
+    async def start_session(self, ws_callback):
+        """
+        Maintains a live connection to Gemini 3 Pro.
+        """
+        config = {"response_modalities": ["TEXT"]}
+        
+        async with self.client.aio.live.connect(model="gemini-2.0-flash-exp", config=config) as session:
+            self.session = session
+            # This loop listens for Gemini's voice/text and sends it to the glasses
+            async for message in session.receive():
+                if message.text:
+                    await ws_callback(message.text)
 
-        # Gemini 3 Specific Configuration
-        config = types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.LOW # Fast for AR
-            ),
-            # media_resolution='low' helps reduce lag from Spectacle frames
-            media_resolution=types.MediaResolution.LOW 
-        )
-
-        response = self.client.models.generate_content(
-            model=self.model_id,
-            contents=parts,
-            config=config
+    async def send_to_gemini(self, audio_chunk_b64, image_b64=None):
+        """
+        Immediately forwards whatever the glasses see/hear.
+        No more waiting for batches!
+        """
+        if not self.session: return
+        
+        # Send audio as it arrives (raw bytes)
+        await self.session.send(
+            input=types.LiveClientContent(
+                parts=[types.Part.from_bytes(data=audio_chunk_b64, mime_type="audio/pcm")]
+            )
         )
         
-        return response.text
+        # Send image if available (limit to 1 frame per second to save bandwidth)
+        if image_b64:
+            await self.session.send(
+                input=types.LiveClientContent(
+                    parts=[types.Part.from_bytes(data=image_b64, mime_type="image/jpeg")]
+                )
+            )

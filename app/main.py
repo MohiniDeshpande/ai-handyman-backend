@@ -1,64 +1,94 @@
-import json, asyncio, logging, base64
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import json
+import asyncio
+import re
+import base64
+import os
+import numpy as np
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
 from app.gemini_client import GeminiClient
-from app.session_manager import SessionManager
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("HandymanBridge")
+from app.config import SILENCE_THRESHOLD, AUDIO_TRIGGER_CHUNKS
 
 app = FastAPI()
-gemini = GeminiClient()
-manager = SessionManager()
+gemini_client = GeminiClient()
+JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
+
+# --- MANDATORY RENDER HEALTH CHECK ---
+@app.get("/")
+@app.head("/")
+async def health_check():
+    """
+    Returns 200 OK for Render's zero-downtime health probes.
+    """
+    return {"status": "online", "engine": "Gemini 3 Pro Handyman"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    session_id = str(id(ws))
-    session = manager.get_or_create(session_id)
-    logger.info(f"CONNECTED: {session_id}")
+    print(">>> [CONNECTED] Spectacles 3 Pro Bridge", flush=True)
+    
+    latest_video = None
+    audio_buffer = []
 
     try:
         while True:
-            # Receive raw text from Spectacles
-            raw_text = await ws.receive_text()
-            
+            # Resilient message reception for Python 3.13+
             try:
-                # If this fails because of a fragment, the 'except' block will catch it
-                data = json.loads(raw_text)
-                msg_type = data.get("type")
+                message = await ws.receive()
+            except Exception:
+                break
 
-                if msg_type == "audio":
-                    session.add_audio(data.get("value"))
-                    if len(session.audio_buffer) % 10 == 0:
-                        logger.info(f"Audio received: {len(session.audio_buffer)} chunks")
-                
-                elif msg_type == "image":
-                    session.set_image(data.get("value"))
-                    logger.info("Image received")
+            raw_msg = ""
+            if "text" in message: raw_msg = message["text"]
+            elif "bytes" in message: raw_msg = message["bytes"].decode('utf-8', errors='ignore')
 
-                # TRIGGER: 1000ms (approx 25 chunks of 40ms audio)
-                if len(session.audio_buffer) >= 25:
-                    logger.info(">>> THRESHOLD MET: Calling Gemini 3 Pro...")
+            if not raw_msg: continue
+
+            # Extract potential JSON objects from the stream
+            found_objects = JSON_PATTERN.findall(raw_msg)
+            for obj_str in found_objects:
+                try:
+                    data = json.loads(obj_str.strip())
+                    msg_type = data.get("event") or data.get("type")
+                    payload = data.get("data") or data.get("value")
+
+                    if msg_type in ["video_b64", "video"]:
+                        latest_video = payload
                     
-                    audio_payload = session.get_audio_payload()
-                    image_payload = session.get_image_payload()
+                    elif msg_type in ["audio_b64", "audio"]:
+                        audio_bytes = base64.b64decode(payload)
+                        audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+                        
+                        if np.abs(audio_data).mean() > SILENCE_THRESHOLD:
+                            audio_buffer.append(payload)
 
-                    # Gemini 3 Call
-                    response = await gemini.ask_foreman(audio_payload, image_payload, session.history)
-                    
-                    # Send response back to glasses
-                    await ws.send_json({
-                        "event": "ai_result",
-                        "data": {"speech_text": response}
-                    })
-                    
-                    session.clear_audio() # Reset buffer for next turn
-
-            except json.JSONDecodeError:
-                # We skip fragments silently to keep the connection alive
-                continue
+                        # Process when buffer is full
+                        if len(audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
+                            current_batch = list(audio_buffer)
+                            audio_buffer = []
+                            asyncio.create_task(process_ai_request(ws, current_batch, latest_video))
+                except: continue
 
     except WebSocketDisconnect:
-        logger.info(f"DISCONNECTED: {session_id}")
-    finally:
-        manager.delete_session(session_id)
+        print(">>> [DISCONNECTED]", flush=True)
+
+async def process_ai_request(ws: WebSocket, audio: list, image: str):
+    """
+    Switching to STREAMING mode to fix the 3-minute latency.
+    """
+    try:
+        # We call the streaming version of the SDK
+        async for chunk in gemini_client.client.aio.models.generate_content_stream(
+            model=TEXT_MODEL,
+            contents=gemini_client.prepare_parts(audio, image),
+            config=types.GenerateContentConfig(temperature=0.0)
+        ):
+            if chunk.text:
+                # Send EACH WORD as it's generated
+                await ws.send_text(json.dumps({
+                    "event": "ai_result",
+                    "data": {"speech_text": chunk.text}
+                }))
+                print(f">>> [STREAMING] {chunk.text}", flush=True)
+                
+    except Exception as e:
+        print(f">>> [LATENCY ERROR] {e}")

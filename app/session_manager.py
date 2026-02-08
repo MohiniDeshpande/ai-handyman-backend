@@ -20,10 +20,16 @@ class Session:
 
     def is_ready_to_ask(self):
         """
-        Point 1 & 5: Trigger AI when we have ~2.5 seconds of audio.
-        Adjust the number 25 based on your Spectacles' send rate.
+        Triggers at the 1000ms mark. 
+        Assumes 25 chunks of 40ms each = 1 second of audio.
         """
-        return len(self.audio_buffer) >= 25
+        audio_chunk_count = len(self.audio_buffer)
+        
+        # Log every 5 chunks so you can see it filling up in Render logs
+        if audio_chunk_count % 5 == 0 and audio_chunk_count > 0:
+            print(f"DEBUG: Buffer at {audio_chunk_count}/25 chunks")
+    
+        return audio_chunk_count >= 25
 
     def get_multimodal_payload(self):
         """Point 1 & 6: Combines audio chunks into one clean byte stream."""

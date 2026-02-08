@@ -67,15 +67,14 @@ async def process_ai_request(ws: WebSocket, audio: list, image: str):
     ai_text = await gemini_client.analyze_handyman_context(audio, image)
     
     if ai_text:
-        payload = {
-            "event": "ai_result",
-            "data": {"speech_text": ai_text}
-        }
+        payload = {"event": "ai_result", "data": {"speech_text": ai_text}}
         try:
-            # CHECK: Only send if the state is connected
+            # ONLY send if the connection is still open
             if ws.client_state.name == "CONNECTED":
                 await ws.send_text(json.dumps(payload))
+        
         except Exception as e:
             print(f">>> [SEND ERROR] Connection lost while sending: {e}")
+
 
 

@@ -1,50 +1,32 @@
 import uuid
 import time
-from fastapi import WebSocket
+from typing import Dict, Optional, List
+
+class Session:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.audio_buffer: List[str] = []  # Stores base64 PCM chunks
+        self.latest_video: Optional[str] = None
+        self.last_activity = time.time()
+        self.is_recording = False
+
+    def reset_audio(self):
+        self.audio_buffer = []
+        print(f">>> [LOG] Session {self.session_id}: Audio buffer reset.")
 
 class SessionManager:
-    """
-    Manages WebSocket sessions with timeout support.
-    """
-
-    def __init__(self, timeout_seconds: int = 3600, warning_seconds: int = 60, ws: WebSocket = None):
-        self.sessions = {}
+    def __init__(self, timeout_seconds: int = 600):
+        self.sessions: Dict[str, Session] = {}
         self.timeout_seconds = timeout_seconds
-        self.warning_seconds = warning_seconds
-        self.ws = ws
-        self.active = True
 
-    def create(self):
-        session_id = str(uuid.uuid4())
-        self.sessions[session_id] = {
-            "created_at": time.time(),
-            "last_activity": time.time()
-        }
-        return session_id
-
-    def get(self, session_id: str):
-        session = self.sessions.get(session_id)
-        if not session:
-            return None
-        # Check timeout
-        if time.time() - session["last_activity"] > self.timeout_seconds:
-            self.remove(session_id)
-            return None
-        session["last_activity"] = time.time()
-        return session
+    def get_or_create(self, session_id: Optional[str] = None) -> Session:
+        # Create a short ID for cleaner Render logs
+        new_id = str(uuid.uuid4())[:8]
+        self.sessions[new_id] = Session(new_id)
+        print(f">>> [LOG] Session Created: {new_id}")
+        return self.sessions[new_id]
 
     def remove(self, session_id: str):
         if session_id in self.sessions:
             del self.sessions[session_id]
-
-    def cleanup(self):
-        """Remove expired sessions"""
-        now = time.time()
-        expired = [sid for sid, s in self.sessions.items() if now - s["last_activity"] > self.timeout_seconds]
-        for sid in expired:
-            self.remove(sid)
-
-    async def close(self):
-        self.active = False
-        if self.ws:
-            await self.ws.close()
+            print(f">>> [LOG] Session Removed: {session_id}")

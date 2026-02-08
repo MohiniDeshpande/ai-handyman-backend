@@ -1,24 +1,29 @@
 import uuid
+import time
 
 class Session:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.audio_buffer = []
         self.latest_video = None
-        self.is_recording = False # Tracks if the button is held
-
-    def reset_audio(self):
-        self.audio_buffer = []
+        self.last_activity = time.time()
+        self.is_recording = False # Ready for your teammate's button
 
 class SessionManager:
     def __init__(self):
         self.sessions = {}
 
-    def get_or_create(self):
-        sid = str(uuid.uuid4())[:8]
-        self.sessions[sid] = Session(sid)
-        return self.sessions[sid]
+    def get_or_create(self, session_id: str = None) -> Session:
+        if not session_id or session_id not in self.sessions:
+            session_id = str(uuid.uuid4())[:8]
+            self.sessions[session_id] = Session(session_id)
+            print(f">>> [SESSION CREATED] {session_id}")
+        
+        session = self.sessions[session_id]
+        session.last_activity = time.time()
+        return session
 
-    def remove(self, sid):
-        if sid in self.sessions:
-            del self.sessions[sid]
+    def remove(self, session_id: str):
+        if session_id in self.sessions:
+            del self.sessions[session_id]
+            print(f">>> [SESSION REMOVED] {session_id}")

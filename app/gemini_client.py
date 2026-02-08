@@ -2,61 +2,56 @@ import base64
 import logging
 from google import genai
 from google.genai import types
+from app.config import GEMINI_API_KEY, TEXT_MODEL
 
 logger = logging.getLogger(__name__)
 
 class GeminiClient:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str = GEMINI_API_KEY):
+        # Initializing the main client
         self.client = genai.Client(api_key=api_key)
 
-    async def analyze_handyman_context(self, audio_chunks: list, image_b64: str = None):
+    async def analyze_handyman_context(self, audio_list: list, image_b64: str = None):
+        """
+        Sends multimodal data to Gemini 3 Pro using the 2026 Async SDK patterns.
+        """
         parts = []
 
-        # 1. AUDIO (MUST COME FIRST FOR PRIORITY)
-        # We join the chunks into one larger buffer for better speech recognition
-        if audio_chunks:
-            combined_audio = b"".join([base64.b64decode(c) for c in audio_chunks])
-            parts.append(
-                types.Part.from_bytes(
-                    data=combined_audio, 
-                    # CRITICAL: rate=16000 tells Gemini how to 'hear' Spectacles audio
-                    mime_type="audio/pcm;rate=16000" 
-                )
-            )
-
-        # 2. IMAGE (CONTEXT)
+        # 1. Image Part (Visual context)
         if image_b64:
+            image_data = base64.b64decode(image_b64)
             parts.append(
-                types.Part.from_bytes(
-                    data=base64.b64decode(image_b64), 
-                    mime_type="image/jpeg"
-                )
+                types.Part.from_bytes(data=image_data, mime_type="image/jpeg")
             )
 
-        # 3. SYSTEM DIRECTIVE
-        directive = (
-            "You are a Spectacles AI Handyman. PRIORITY: Listen to the audio. "
-            "If the audio is silent or unclear, say: 'I couldn't quite hear that, can you repeat?' "
-            "If you hear a question, answer it briefly using the image for context. "
-            "DO NOT start your response with 'As a handyman' or 'In the photo'."
+        # 2. Audio Parts (Voice context)
+        for chunk in audio_list:
+            audio_data = base64.b64decode(chunk)
+            parts.append(
+                types.Part.from_bytes(data=audio_data, mime_type="audio/pcm")
+            )
+
+        # 3. System Instruction as a Text Part
+        parts.append(
+            types.Part.from_text(
+                text="Role: Expert Handyman named Fixy. Task: Briefly answer the user's question based on the audio and image provided. Answer within 400 characters. Stay safe and ask for different angles if you can't see and understand from the images you have. Do not call say 'images you have provided' always say 'livefeed' when you want to mention the image data."
+            )
         )
-        parts.append(types.Part.from_text(text=directive))
 
         try:
-            # We use the 'generate_content' with specific 2026 config
+            # Using the .aio module for the asynchronous generate_content call
             response = await self.client.aio.models.generate_content(
-                model="gemini-3-pro-preview",
+                model=TEXT_MODEL,
                 contents=[types.Content(role="user", parts=parts)],
                 config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=1000, # Prevents mid-sentence cutoffs
+                    temperature=0.7,
+                    # Triggers the Gemini 3 Pro reasoning engine
                     thinking_config=types.ThinkingConfig(
-                        include_thoughts=False, # Saves bandwidth for the glasses
-                        thinking_level=types.ThinkingLevel.LOW # Faster response
+                        thinking_level=types.ThinkingLevel.HIGH
                     )
                 )
             )
             return response.text
         except Exception as e:
-            logger.error(f">>> [GEMINI ERROR] {e}")
-            return "Connection error. Try again."
+            logger.error(f">>> [GEMINI SDK ERROR] {e}")
+            return f"Error connecting to Gemini 3: {str(e)}"

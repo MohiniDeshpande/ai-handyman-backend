@@ -21,4 +21,4 @@ THINKING_LEVEL = "high"  # Options: "low" (fast/cheap) or "high" (complex reason
 MEDIA_RESOLUTION = "media_resolution_high" # New parameter for 2026 vision tasks
 
 SILENCE_THRESHOLD = 350
-AUDIO_TRIGGER_CHUNKS = 20
+AUDIO_TRIGGER_CHUNKS = 80

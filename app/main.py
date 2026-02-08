@@ -62,16 +62,20 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         print(">>> [DISCONNECTED]", flush=True)
 
+
 async def process_ai_request(ws: WebSocket, audio: list, image: str):
-    # Returns the plain text from the SDK's response.text helper
     ai_text = await gemini_client.analyze_handyman_context(audio, image)
     
     if ai_text:
-        # Standard Spectacles bridge format
         payload = {
             "event": "ai_result",
             "data": {"speech_text": ai_text}
         }
-        await ws.send_text(json.dumps(payload))
-        print(f">>> [AI SUCCESS] {ai_text[:100]}", flush=True)
+        try:
+            # CHECK: Only send if the state is connected
+            if ws.client_state.name == "CONNECTED":
+                await ws.send_text(json.dumps(payload))
+        except Exception as e:
+            print(f">>> [SEND ERROR] Connection lost while sending: {e}")
+
 

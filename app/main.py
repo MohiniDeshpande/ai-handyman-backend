@@ -8,10 +8,6 @@ app = FastAPI()
 gemini_client = GeminiClient()
 manager = SessionManager()
 
-@app.get("/")
-async def health():
-    return {"status": "Handyman API Online", "mode": "Push-to-Talk"}
-
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
@@ -19,44 +15,39 @@ async def websocket_endpoint(ws: WebSocket):
     
     try:
         while True:
-            # Handle incoming JSON from Spectacles
+            # Use direct JSON receiving to avoid regex overhead
             try:
                 data = await ws.receive_json()
-            except: break
+            except:
+                break
 
-            msg_type = data.get("type") or data.get("event")
-            payload = data.get("data")
+            msg_type = data.get("event") or data.get("type")
+            payload = data.get("data") or data.get("value")
 
-            # 1. Video Feed (Constant update)
+            # 1. Video update (Always active)
             if msg_type in ["video", "video_b64"]:
                 session.latest_video = payload
 
-            # 2. START PTT (User tapped button)
+            # 2. START Button Pressed
             elif msg_type == "start_capture":
                 session.reset_audio()
                 session.is_recording = True
-                print(f">>> [LOG] Recording started for {session.session_id}")
+                print(f">>> [LOG] Recording started: {session.session_id}")
 
-            # 3. Stream Audio (Only collect if recording is ON)
-            # Inside your main.py websocket_endpoint loop
-            elif msg_type in ["audio", "audio_b64"]:
-                if session.is_recording:
-                    session.audio_buffer.append(payload)
-                else:
-                    # Ignore audio packets sent while the button isn't pressed
-                    pass
+            # 3. Audio Stream (ONLY buffer if button is held)
+            elif msg_type in ["audio", "audio_b64"] and session.is_recording:
+                session.audio_buffer.append(payload)
 
-            # 4. STOP PTT (User released button - Trigger AI)
+            # 4. STOP Button Released (Trigger Gemini 3 Pro)
             elif msg_type == "stop_capture":
                 session.is_recording = False
-                print(f">>> [LOG] Triggering Gemini 3 Pro for {session.session_id}...")
+                print(f">>> [LOG] Triggering Gemini for {session.session_id}...")
                 
-                # Await the response (blocking the loop for this user until finished)
+                # Fetch AI response using multimodal data
                 ai_text = await gemini_client.analyze_handyman_context(
                     session.audio_buffer, session.latest_video
                 )
                 
-                # Send result back in bridge format
                 if ws.client_state.name == "CONNECTED":
                     await ws.send_text(json.dumps({
                         "event": "ai_result", 

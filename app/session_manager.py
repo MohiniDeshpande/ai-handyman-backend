@@ -1,30 +1,28 @@
 import uuid
 import time
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 class Session:
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.audio_buffer: List[str] = []  # Stores base64 PCM chunks
+        self.audio_buffer: List[str] = []
         self.latest_video: Optional[str] = None
-        self.last_activity = time.time()
         self.is_recording = False
+        self.last_activity = time.time()
 
     def reset_audio(self):
         self.audio_buffer = []
-        print(f">>> [LOG] Session {self.session_id}: Audio buffer reset.")
 
 class SessionManager:
-    def __init__(self, timeout_seconds: int = 600):
+    def __init__(self):
         self.sessions: Dict[str, Session] = {}
-        self.timeout_seconds = timeout_seconds
 
-    def get_or_create(self, session_id: Optional[str] = None) -> Session:
-        # Create a short ID for cleaner Render logs
-        new_id = str(uuid.uuid4())[:8]
-        self.sessions[new_id] = Session(new_id)
-        print(f">>> [LOG] Session Created: {new_id}")
-        return self.sessions[new_id]
+    def get_or_create(self) -> Session:
+        # Create a clean session with an 8-char ID for easier Render logging
+        session_id = str(uuid.uuid4())[:8]
+        self.sessions[session_id] = Session(session_id)
+        print(f">>> [LOG] Session Created: {session_id}")
+        return self.sessions[session_id]
 
     def remove(self, session_id: str):
         if session_id in self.sessions:

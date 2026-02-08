@@ -61,46 +61,52 @@ async def websocket_endpoint(ws: WebSocket):
                     logger.error(f"Fragment Error: {e}")
 
             # 3. Check if we should call Gemini
+            # ... inside the while True loop after parsing the JSON ...
+
             if session.is_ready_to_ask():
-                logger.info(f"[{session_id}] >>> BUFFER READY. Sending to Gemini...")
-                
+                # 1. Grab the 1000ms of data
                 audio_bytes, image_bytes = session.get_multimodal_payload()
-                start_time = time.time()
                 
-                try:
-                    full_response = await gemini.ask_foreman(
-                        audio_bytes, image_bytes, session.history
-                    )
-                    
-                    latency = time.time() - start_time
-                    logger.info(f"[{session_id}] Gemini Response in {latency:.2f}s: {full_response[:100]}...")
-
-                    # 4. Chunking for Spectacles TTS (400 char limit)
-                    chunks = session.prepare_chunks_for_spectacles(full_response)
-                    for i, text_chunk in enumerate(chunks):
-                        logger.info(f"[{session_id}] Sending TTS Chunk {i+1}/{len(chunks)}")
-                        await ws.send_json({
-                            "event": "ai_result",
-                            "data": {
-                                "speech_text": text_chunk,
-                                "is_final": (i == len(chunks) - 1)
-                            }
-                        })
-                        await asyncio.sleep(0.1)
-
-                    # Update history
-                    session.history.append({
-                        "role": "model", 
-                        "parts": [types.Part.from_text(text=full_response)]
-                    })
-
-                except Exception as ai_err:
-                    logger.error(f"[{session_id}] Gemini Error: {ai_err}")
-                    await ws.send_json({"event": "error", "data": str(ai_err)})
-
-    except WebSocketDisconnect:
-        logger.info(f"==> [WS CLOSED] Session: {session_id}")
-    except Exception as e:
-        logger.error(f"!!! [CRITICAL ERROR] {e}", exc_info=True)
-    finally:
-        manager.delete_session(session_id)
+                # 2. Immediate feedback to Spectacles (Stops the 'is it working?' anxiety)
+                await ws.send_json({"event": "system", "data": {"message": "Foreman is thinking..."}})
+            
+                # 3. Call Gemini
+                full_response = await gemini.ask_foreman(audio_bytes, image_bytes, session.history)
+                
+                # 4. Clear the buffer so we don't loop the same audio
+                session.audio_buffer = [] 
+                
+                # 5. Send chunks
+                for chunk in session.prepare_chunks_for_spectacles(full_response):
+                    await ws.send_json({"event": "ai_result", "data": {"speech_text": chunk}})
+                    await asyncio.sleep(0.05)
+                                # 4. Chunking for Spectacles TTS (400 char limit)
+                                chunks = session.prepare_chunks_for_spectacles(full_response)
+                                for i, text_chunk in enumerate(chunks):
+                                    logger.info(f"[{session_id}] Sending TTS Chunk {i+1}/{len(chunks)}")
+                                    await ws.send_json({
+                                        "event": "ai_result",
+                                        "data": {
+                                            "speech_text": text_chunk,
+                                            "is_final": (i == len(chunks) - 1)
+                                        }
+                                    })
+                                    await asyncio.sleep(0.1)
+            
+                                # Update history
+                                session.history.append({
+                                    "role": "model", 
+                                    "parts": [types.Part.from_text(text=full_response)]
+                                })
+            
+                            except Exception as ai_err:
+                                logger.error(f"[{session_id}] Gemini Error: {ai_err}")
+                                await ws.send_json({"event": "error", "data": str(ai_err)})
+            
+                except WebSocketDisconnect:
+                    logger.info(f"==> [WS CLOSED] Session: {session_id}")
+                except Exception as e:
+                    logger.error(f"!!! [CRITICAL ERROR] {e}", exc_info=True)
+                finally:
+                    manager.delete_session(session_id)
+            

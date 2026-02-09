@@ -7,7 +7,9 @@ class Session:
         self.audio_buffer = []
         self.latest_video = None
         self.last_activity = time.time()
-        self.is_recording = False # Ready for your teammate's button
+        self.is_recording = False  # pinch/button pressed
+        self.processing = False    # prevents overlapping Gemini calls
+
 
 class SessionManager:
     def __init__(self):
@@ -18,7 +20,7 @@ class SessionManager:
             session_id = str(uuid.uuid4())[:8]
             self.sessions[session_id] = Session(session_id)
             print(f">>> [SESSION CREATED] {session_id}")
-        
+
         session = self.sessions[session_id]
         session.last_activity = time.time()
         return session

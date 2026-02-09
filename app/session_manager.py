@@ -1,4 +1,3 @@
-# app/session_manager.py
 import uuid
 import time
 
@@ -9,7 +8,8 @@ class Session:
         self.latest_video = None
         self.last_activity = time.time()
         self.is_recording = False
-        self.processing = False
+        self.processing = False  # prevent overlapping Gemini calls
+
 
 class SessionManager:
     def __init__(self):
@@ -21,9 +21,9 @@ class SessionManager:
             self.sessions[session_id] = Session(session_id)
             print(f">>> [SESSION CREATED] {session_id}")
 
-        s = self.sessions[session_id]
-        s.last_activity = time.time()
-        return s
+        session = self.sessions[session_id]
+        session.last_activity = time.time()
+        return session
 
     def remove(self, session_id: str):
         if session_id in self.sessions:

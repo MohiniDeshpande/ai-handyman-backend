@@ -4,12 +4,11 @@ import time
 class Session:
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.audio_buffer = []
-        self.latest_video = None
+        self.audio_buffer = []      # list[str] base64 PCM chunks
+        self.latest_video = None    # str base64 jpeg
         self.last_activity = time.time()
         self.is_recording = False
-        self.processing = False  # prevent overlapping Gemini calls
-
+        self.processing = False     # prevent overlapping Gemini calls
 
 class SessionManager:
     def __init__(self):
@@ -21,9 +20,9 @@ class SessionManager:
             self.sessions[session_id] = Session(session_id)
             print(f">>> [SESSION CREATED] {session_id}")
 
-        session = self.sessions[session_id]
-        session.last_activity = time.time()
-        return session
+        s = self.sessions[session_id]
+        s.last_activity = time.time()
+        return s
 
     def remove(self, session_id: str):
         if session_id in self.sessions:

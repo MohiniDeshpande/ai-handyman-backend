@@ -4,8 +4,14 @@ import logging
 from google import genai
 from google.genai import types
 
-from app.config import GEMINI_API_KEY, TEXT_MODEL, IMAGE_MODEL, MAX_SPOKEN_CHARS
+from app.config import GEMINI_API_KEY, TEXT_MODEL, IMAGE_MODEL
 
+# Render sometimes boots with stale config during deploy.
+# This prevents the whole server from crashing.
+try:
+    from app.config import MAX_SPOKEN_CHARS
+except ImportError:
+    MAX_SPOKEN_CHARS = 280
 logger = logging.getLogger(__name__)
 
 def _clamp_text(s: str, n: int) -> str:

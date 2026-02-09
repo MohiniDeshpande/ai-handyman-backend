@@ -1,87 +1,197 @@
 import json
 import asyncio
-import re
 import base64
+import logging
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
 from app.gemini_client import GeminiClient
 from app.session_manager import SessionManager
 from app.config import SILENCE_THRESHOLD, AUDIO_TRIGGER_CHUNKS
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("handybot")
+
 app = FastAPI()
 gemini_client = GeminiClient()
 manager = SessionManager()
-JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
 
-@app.websocket("/ws")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.websocket("/ws/spectacles")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    # Unique session for this connection
     session = manager.get_or_create()
-    print(f">>> [CONNECTED] Session: {session.session_id}")
-    
+
+    logger.info(f">>> [CONNECTED] session={session.session_id}")
+
+    # Session state (per WS connection)
+    session.latest_video = None          # base64 jpeg (no prefix)
+    session.audio_buffer = []            # list[str] base64 pcm
+    session.is_recording = False         # pinch-to-talk or button
+    session.processing = False           # prevents overlapping Gemini calls
+
     try:
         while True:
+            msg = await ws.receive()
+
+            # We only support JSON TEXT messages from Lens.
+            raw = msg.get("text")
+            if not raw:
+                # If bytes arrive, ignore (or log once). Your Lens code sends JSON, so bytes aren't needed.
+                if msg.get("bytes"):
+                    logger.debug("[RX] got bytes frame (ignored)")
+                continue
+
             try:
-                message = await ws.receive()
-            except: break
+                data = json.loads(raw)
+            except Exception:
+                # If the client accidentally concatenated JSONs, ignore rather than regex-hack.
+                logger.warning(f"[RX] bad JSON (len={len(raw)}), ignoring")
+                continue
 
-            raw_msg = ""
-            if "text" in message: raw_msg = message["text"]
-            elif "bytes" in message: raw_msg = message["bytes"].decode('utf-8', errors='ignore')
+            msg_type = data.get("event") or data.get("type")
+            payload = data.get("data") or data.get("value")
 
-            if not raw_msg: continue
+            # ---- keepalive for Render
+            if msg_type == "ping":
+                await ws.send_text(json.dumps({"type": "pong", "event": "pong"}))
+                continue
 
-            found_objects = JSON_PATTERN.findall(raw_msg)
-            for obj_str in found_objects:
-                try:
-                    data = json.loads(obj_str.strip())
-                    msg_type = data.get("event") or data.get("type")
-                    payload = data.get("data") or data.get("value")
+            # ---- optional handshake
+            if msg_type == "hello":
+                logger.info("[RX] hello")
+                await ws.send_text(json.dumps({"type": "hello_ack", "event": "hello_ack"}))
+                continue
 
-                    # Handle Button Events (For your teammate's UI)
-                    if msg_type == "start_capture":
-                        session.audio_buffer = []
-                        session.is_recording = True
-                    elif msg_type == "stop_capture":
-                        session.is_recording = False
-                        # Force trigger when button released
-                        asyncio.create_task(process_ai_request(ws, session))
+            # ---- control from Lens (start/stop)
+            if msg_type in ("control", "start_capture"):
+                cmd = data.get("command") or "start"
+                if cmd == "start" or msg_type == "start_capture":
+                    session.is_recording = True
+                    session.audio_buffer = []
+                    logger.info("[CTRL] start recording")
+                continue
 
-                    # 1. Video (Saved to session)
-                    if msg_type in ["video_b64", "video"]:
-                        session.latest_video = payload
-                    
-                    # 2. Audio (Saved to session)
-                    elif msg_type in ["audio_b64", "audio"]:
-                        # If teammate hasn't added button yet, we use your volume logic
+            if msg_type in ("stop_capture",):
+                session.is_recording = False
+                logger.info("[CTRL] stop recording -> trigger")
+                # Trigger immediately when user releases pinch/button
+                asyncio.create_task(process_ai_request(ws, session))
+                continue
+
+            if msg_type == "control":
+                cmd = data.get("command")
+                if cmd == "stop":
+                    session.is_recording = False
+                    logger.info("[CTRL] stop streaming")
+                continue
+
+            # ---- video frames
+            if msg_type in ("video_b64", "video"):
+                if isinstance(payload, str) and payload:
+                    session.latest_video = payload
+                    logger.debug(f"[RX] video_b64 len={len(payload)}")
+                continue
+
+            # ---- audio chunks
+            if msg_type in ("audio_b64", "audio"):
+                if not isinstance(payload, str) or not payload:
+                    continue
+
+                # If not recording (no pinch) we still allow your silence trigger mode
+                should_buffer = session.is_recording
+
+                if not should_buffer:
+                    # loudness check
+                    try:
                         audio_bytes = base64.b64decode(payload)
-                        audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                        
-                        # Only buffer if loud enough OR button is pressed
-                        if np.abs(audio_data).mean() > SILENCE_THRESHOLD or session.is_recording:
-                            session.audio_buffer.append(payload)
+                        audio_i16 = np.frombuffer(audio_bytes, dtype=np.int16)
+                        loudness = float(np.abs(audio_i16).mean())
+                        should_buffer = loudness > SILENCE_THRESHOLD
+                    except Exception as e:
+                        logger.warning(f"[AUDIO] decode failed: {e}")
+                        should_buffer = False
 
-                        # Auto-trigger if buffer gets too big
-                        if len(session.audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
-                            asyncio.create_task(process_ai_request(ws, session))
-                except: continue
-                
+                if should_buffer:
+                    session.audio_buffer.append(payload)
+                    logger.debug(f"[RX] audio_b64 chunks={len(session.audio_buffer)}")
+
+                # Auto trigger when buffer reaches threshold
+                if len(session.audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
+                    logger.info(f"[TRIGGER] chunks={len(session.audio_buffer)} -> process_ai_request")
+                    asyncio.create_task(process_ai_request(ws, session))
+                continue
+
+            # Unknown messages
+            logger.debug(f"[RX] unknown type={msg_type}")
+
     except WebSocketDisconnect:
+        logger.info(f">>> [DISCONNECTED] session={session.session_id}")
+    except Exception as e:
+        logger.error(f">>> [WS ERROR] session={session.session_id} err={e}")
+    finally:
         manager.remove(session.session_id)
 
+
 async def process_ai_request(ws: WebSocket, session):
-    if not session.audio_buffer: return
-    
-    # Snapshot the current data
+    """
+    Snapshot current buffers and call Gemini. Returns ai_result with:
+    - speech_text (short)
+    - cues (list of cue lines)
+    - flags
+    """
+    if session.processing:
+        return
+    if not session.audio_buffer:
+        return
+
+    session.processing = True
+
+    # Snapshot
     current_audio = list(session.audio_buffer)
     current_video = session.latest_video
-    session.audio_buffer = [] # Clear immediately to avoid double-trigger
-    
-    ai_text = await gemini_client.analyze_handyman_context(current_audio, current_video)
-    
-    if ai_text and ws.client_state.name == "CONNECTED":
-        await ws.send_text(json.dumps({
+    session.audio_buffer = []  # clear immediately
+
+    logger.info(f"[AI] request audio_chunks={len(current_audio)} video={'yes' if bool(current_video) else 'no'}")
+
+    try:
+        result = await gemini_client.analyze_handyman_context(
+            audio_list=current_audio,
+            image_b64=current_video
+        )
+        # result is dict from gemini_client.py
+        speech_text = (result.get("spoken_text") or "").strip()
+        cues = result.get("cues") or []
+        safety = bool(result.get("safety_warning"))
+        better = bool(result.get("request_better_view"))
+
+        # Safety: never send huge text back to Lens (protect TTS)
+        if len(speech_text) > 500:
+            speech_text = speech_text[:500]
+
+        payload = {
+            "type": "ai_result",
             "event": "ai_result",
-            "data": {"speech_text": ai_text}
-        }))
+            "data": {
+                "speech_text": speech_text,
+                "cues": cues,
+                "safety_warning": safety,
+                "request_better_view": better,
+                # optional image generation will go here later:
+                # "generated_image": {"mime_type": "...", "data_b64": "..."}
+            }
+        }
+
+        if ws.client_state.name == "CONNECTED":
+            await ws.send_text(json.dumps(payload))
+            logger.info(f"[AI] sent ai_result chars={len(speech_text)} cues={len(cues)} safety={safety} view={better}")
+
+    except Exception as e:
+        logger.error(f"[AI] error: {e}")
+    finally:
+        session.processing = False

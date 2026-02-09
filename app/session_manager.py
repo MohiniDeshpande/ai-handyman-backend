@@ -1,3 +1,4 @@
+# app/session_manager.py
 import uuid
 import time
 
@@ -7,9 +8,8 @@ class Session:
         self.audio_buffer = []
         self.latest_video = None
         self.last_activity = time.time()
-        self.is_recording = False  # pinch/button pressed
-        self.processing = False    # prevents overlapping Gemini calls
-
+        self.is_recording = False
+        self.processing = False
 
 class SessionManager:
     def __init__(self):
@@ -21,9 +21,9 @@ class SessionManager:
             self.sessions[session_id] = Session(session_id)
             print(f">>> [SESSION CREATED] {session_id}")
 
-        session = self.sessions[session_id]
-        session.last_activity = time.time()
-        return session
+        s = self.sessions[session_id]
+        s.last_activity = time.time()
+        return s
 
     def remove(self, session_id: str):
         if session_id in self.sessions:

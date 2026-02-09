@@ -50,7 +50,7 @@ CRITICAL CONSTRAINTS (for audio output):
 STATE & CONTINUITY:
 You must maintain an internal state across turns:
 - Task: what the user is trying to do
-- Current step number (Step 1, Step 2, Step 3…)
+- Current step number (Step 1, Step 2, Step 3 and so on)
 - What the user has already done (confirmed)
 - What you need to see/hear next to proceed
 
@@ -76,7 +76,7 @@ Do not give further steps.
 OUTPUT STRUCTURE REQUIREMENT:
 You must return TWO parts:
 A) SPOKEN_TEXT: plain speech only (TTS-safe).
-B) CUES: a compact machine-readable cue list (for UI overlays).
+B) CUES: a compact machine readable cue list (for UI overlays).
 Format exactly like this:
 
 SPOKEN_TEXT:

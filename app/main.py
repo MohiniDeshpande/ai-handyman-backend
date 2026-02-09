@@ -123,7 +123,8 @@ async def process_ai_request(ws: WebSocket, session):
 
     finally:
         session.processing = False    
-        )
+        
+
 
 
 

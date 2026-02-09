@@ -71,17 +71,57 @@ async def websocket_endpoint(ws: WebSocket):
         manager.remove(session.session_id)
 
 async def process_ai_request(ws: WebSocket, session):
-    if not session.audio_buffer: return
-    
-    # Snapshot the current data
-    current_audio = list(session.audio_buffer)
-    current_video = session.latest_video
-    session.audio_buffer = [] # Clear immediately to avoid double-trigger
-    
-    ai_text = await gemini_client.analyze_handyman_context(current_audio, current_video)
-    
-    if ai_text and ws.client_state.name == "CONNECTED":
-        await ws.send_text(json.dumps({
+    if not session.audio_buffer:
+        return
+    if session.processing:
+        return
+
+    session.processing = True
+    try:
+        current_audio = list(session.audio_buffer)
+        current_video = session.latest_video
+        session.audio_buffer = []
+
+        ai_text = await gemini_client.analyze_handyman_context(current_audio, current_video)
+        if not ai_text:
+            return
+
+        # Extract IMAGE_REQUEST if present
+        image_prompt = None
+        lines = [l.strip() for l in ai_text.splitlines() if l.strip()]
+        cleaned_lines = []
+        for l in lines:
+            if l.upper().startswith("IMAGE_REQUEST:"):
+                image_prompt = l.split(":", 1)[1].strip()
+            else:
+                cleaned_lines.append(l)
+
+        speech_text = " ".join(cleaned_lines).strip()
+
+        payload = {
             "event": "ai_result",
-            "data": {"speech_text": ai_text}
+            "type": "ai_result",
+            "data": {
+                "speech_text": speech_text
+            }
+        }
+
+        # If image requested, generate and send URL (NOT base64)
+        if image_prompt:
+            img_bytes, mime = await gemini_client.generate_reference_image(
+                prompt=image_prompt,
+                ref_image_b64=current_video  # optional: helps match what user is holding
+            )
+            if img_bytes:
+                image_id = put_image(img_bytes, mime)
+                # IMPORTANT: use your Render base URL here
+                payload["data"]["generated_image_url"] = f"/img/{image_id}"
+                payload["data"]["generated_image_mime"] = mime
+
+        if ws.client_state.name == "CONNECTED":
+            await ws.send_text(json.dumps(payload))
+
+    finally:
+        session.processing = False    
         }))
+

@@ -34,8 +34,7 @@ class GeminiClient:
         # 3. System Instruction as a Text Part
         parts.append(
             types.Part.from_text(
-                text="Role: You are HandyBot — a calm, expert AI handyman assistant that sees through the user’s camera
-and hears through their microphone in real time.
+                text="Role: You are HandyBot — a calm, expert AI handyman assistant that sees through the user’s camera and hears through their microphone in real time.
 
 Your goal is to help the user safely complete simple home repair and DIY tasks.
 
@@ -84,8 +83,7 @@ Example tone:
 Now, hold the screwdriver in your right hand.
 Tighten the top screw slowly."
 
-You are speaking to the user through smart glasses while they work.
-"
+You are speaking to the user through smart glasses while they work."
             )
         )
 

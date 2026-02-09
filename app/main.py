@@ -1,35 +1,38 @@
-import asyncio
-import base64
 import json
+import asyncio
 import re
-
+import base64
 import numpy as np
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from app.config import SILENCE_THRESHOLD, AUDIO_TRIGGER_CHUNKS
 from app.gemini_client import GeminiClient
 from app.session_manager import SessionManager
+from app.config import SILENCE_THRESHOLD, AUDIO_TRIGGER_CHUNKS
 
 app = FastAPI()
 gemini_client = GeminiClient()
 manager = SessionManager()
 
-# Helps when multiple JSON objects get concatenated
+# If multiple JSON blobs get concatenated, we try to extract them
 JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
 
-@app.get("/")
-def root():
-    return {"ok": True, "service": "handybot-ws"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     session = manager.get_or_create()
-    print(f">>> [WS CONNECTED] session={session.session_id}")
+    print(f">>> [CONNECTED] session={session.session_id}")
 
     try:
         while True:
             msg = await ws.receive()
+
             raw = ""
             if "text" in msg and msg["text"]:
                 raw = msg["text"]
@@ -39,108 +42,116 @@ async def websocket_endpoint(ws: WebSocket):
             if not raw:
                 continue
 
-            # Extract possibly concatenated json objects
-            objects = JSON_PATTERN.findall(raw) or [raw]
-            for obj_str in objects:
+            # Sometimes clients accidentally concatenate JSON packets
+            objs = JSON_PATTERN.findall(raw) or [raw]
+
+            for obj_str in objs:
                 try:
                     data = json.loads(obj_str.strip())
-                except:
+                except Exception:
                     continue
 
                 msg_type = data.get("event") or data.get("type")
                 payload = data.get("data") or data.get("value")
 
+                # --- keepalive ---
                 if msg_type == "ping":
-                    await ws.send_text(json.dumps({"type": "pong", "event": "pong"}))
+                    await ws.send_text(json.dumps({"event": "pong"}))
                     continue
 
+                # --- controls (optional, for UI press/hold) ---
                 if msg_type == "start_capture":
                     session.audio_buffer = []
                     session.is_recording = True
+                    print(f">>> [CAPTURE] START session={session.session_id}")
                     continue
 
                 if msg_type == "stop_capture":
                     session.is_recording = False
+                    print(f">>> [CAPTURE] STOP session={session.session_id} chunks={len(session.audio_buffer)}")
                     asyncio.create_task(process_ai_request(ws, session))
                     continue
 
-                # Video is continuous
-                if msg_type in ["video_b64", "video"]:
-                    session.latest_video = payload
+                # --- video stream (continuous) ---
+                if msg_type in ("video_b64", "video"):
+                    if isinstance(payload, str) and payload:
+                        session.latest_video = payload
                     continue
 
-                # Audio buffers only if loud enough OR "recording" held
-                if msg_type in ["audio_b64", "audio"]:
-                    if not payload:
+                # --- audio stream (buffered) ---
+                if msg_type in ("audio_b64", "audio"):
+                    if not isinstance(payload, str) or not payload:
                         continue
+
+                    # quick logging every so often (optional)
+                    # print(f">>> [AUDIO] recv b64Len={len(payload)} recording={session.is_recording}")
+
+                    # energy gate
                     try:
                         audio_bytes = base64.b64decode(payload)
                         audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                        loud = (np.abs(audio_data).mean() > SILENCE_THRESHOLD)
-
-                        if loud or session.is_recording:
-                            session.audio_buffer.append(payload)
-
-                        if len(session.audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
-                            asyncio.create_task(process_ai_request(ws, session))
-                    except Exception as e:
-                        print(f">>> [AUDIO DECODE ERROR] {e}")
+                        energy = float(np.abs(audio_data).mean())
+                    except Exception:
                         continue
 
+                    if energy > SILENCE_THRESHOLD or session.is_recording:
+                        session.audio_buffer.append(payload)
+
+                    # auto trigger
+                    if len(session.audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
+                        asyncio.create_task(process_ai_request(ws, session))
+
     except WebSocketDisconnect:
-        print(f">>> [WS DISCONNECT] session={session.session_id}")
-    except Exception as e:
-        print(f">>> [WS ERROR] session={session.session_id} err={e}")
+        print(f">>> [DISCONNECTED] session={session.session_id}")
     finally:
         manager.remove(session.session_id)
 
+
 async def process_ai_request(ws: WebSocket, session):
+    # prevent overlapping calls
     if session.processing:
         return
     if not session.audio_buffer:
         return
 
     session.processing = True
+
+    # snapshot
+    audio_list = list(session.audio_buffer)
+    image_b64 = session.latest_video
+    session.audio_buffer = []
+
     try:
-        current_audio = list(session.audio_buffer)
-        current_video = session.latest_video
-        session.audio_buffer = []
+        print(f">>> [AI] calling Gemini session={session.session_id} audioChunks={len(audio_list)} hasVideo={bool(image_b64)}")
 
-        # 1) Text tutor response
-        ai_text = await gemini_client.analyze_handyman_context(current_audio, current_video)
-        if not ai_text:
-            return
+        result = await gemini_client.analyze_handyman_context(audio_list, image_b64)
+        spoken = (result.get("spoken_text") or "").strip()
+        image_prompt = result.get("image_prompt")
 
-        # 2) Optional image request (triggered by model line)
-        img_req = gemini_client.extract_image_request(ai_text)
-        spoken_text = gemini_client.strip_image_request_line(ai_text)
+        generated_image = None
+        if image_prompt:
+            print(f">>> [AI] image requested prompt='{image_prompt[:60]}'")
+            generated_image = await gemini_client.generate_visual_aid(image_prompt)
+            if generated_image:
+                print(f">>> [AI] image ready b64Len={len(generated_image.get('data_b64',''))}")
+            else:
+                print(">>> [AI] image generation failed (no bytes)")
 
-        response_payload = {
-            "event": "ai_result",
+        payload = {
             "type": "ai_result",
+            "event": "ai_result",
             "data": {
-                "speech_text": spoken_text
+                "speech_text": spoken,
             }
         }
 
-        # If image requested, generate + attach
-        if img_req:
-            print(f">>> [IMG REQUEST] {img_req[:80]}")
-            img = await gemini_client.generate_reference_image_b64_jpeg(img_req, max_side_px=512, jpeg_quality=70)
-            if img:
-                mime, b64 = img
-                response_payload["data"]["generated_image"] = {
-                    "mime_type": mime,
-                    "data_b64": b64
-                }
-                print(f">>> [IMG READY] mime={mime} b64Len={len(b64)}")
-            else:
-                print(">>> [IMG FAIL] No image returned")
+        if generated_image:
+            payload["data"]["generated_image"] = generated_image
 
-        await ws.send_text(json.dumps(response_payload))
-        print(f">>> [AI SENT] {spoken_text[:60]}...")
-
+        if ws.client_state.name == "CONNECTED":
+            await ws.send_text(json.dumps(payload))
+            print(f">>> [AI] sent ai_result spokenLen={len(spoken)}")
     except Exception as e:
-        print(f">>> [AI TASK ERROR] {e}")
+        print(f">>> [AI ERROR] {e}")
     finally:
         session.processing = False

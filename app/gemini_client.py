@@ -34,7 +34,7 @@ class GeminiClient:
         # 3. System Instruction as a Text Part
         parts.append(
             types.Part.from_text(
-                text="Role: Expert Handyman. Task: Briefly answer the user's question based on the image provided. Stay safe."
+                text="Role: Expert Handyman. Task: Briefly under 400 characters answer the user's question based on the image and audio provided. Stay safe."
             )
         )
 

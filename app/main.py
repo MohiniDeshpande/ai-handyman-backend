@@ -71,17 +71,25 @@ async def websocket_endpoint(ws: WebSocket):
         manager.remove(session.session_id)
 
 async def process_ai_request(ws: WebSocket, session):
-    if not session.audio_buffer: return
+    ai_text = await gemini_client.analyze_handyman_context(session.audio_buffer, session.latest_video)
     
-    # Snapshot the current data
-    current_audio = list(session.audio_buffer)
-    current_video = session.latest_video
-    session.audio_buffer = [] # Clear immediately to avoid double-trigger
-    
-    ai_text = await gemini_client.analyze_handyman_context(current_audio, current_video)
-    
-    if ai_text and ws.client_state.name == "CONNECTED":
-        await ws.send_text(json.dumps({
-            "event": "ai_result",
-            "data": {"speech_text": ai_text}
-        }))
+    if ai_text:
+        # Check if AI triggered an image generation
+        if "[GENERATE_IMAGE]" in ai_text:
+            clean_prompt = ai_text.replace("[GENERATE_IMAGE]", "").strip()
+            image_b64 = await gemini_client.generate_visual_aid(clean_prompt)
+            
+            payload = {
+                "event": "ai_image_result",
+                "data": {
+                    "explanation": "Here is a visual for you:",
+                    "image_b64": image_b64
+                }
+            }
+        else:
+            payload = {
+                "event": "ai_result",
+                "data": {"speech_text": ai_text}
+            }
+            
+        await ws.send_text(json.dumps(payload))

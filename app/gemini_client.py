@@ -1,67 +1,103 @@
 # app/gemini_client.py
 import base64
-import io
 import logging
-from PIL import Image
+import re
+from io import BytesIO
 
 from google import genai
 from google.genai import types
-from app.config import GEMINI_API_KEY, TEXT_MODEL, IMAGE_MODEL
+
+from app.config import (
+    GEMINI_API_KEY,
+    TEXT_MODEL,
+    IMAGE_MODEL,
+    THINKING_LEVEL,
+    IMAGE_MAX_DIM,
+    IMAGE_JPEG_QUALITY,
+    IMAGE_MAX_B64_LEN,
+)
 
 logger = logging.getLogger(__name__)
 
+GEN_IMAGE_RE = re.compile(r"^\s*GEN_IMAGE:\s*(.+)\s*$", re.IGNORECASE | re.MULTILINE)
+
 SYSTEM_PROMPT = (
-    "Role: A safe handyman tutor. Use camera and audio context. "
-    "Give max 3 short steps under 60 words. "
-    "If danger: start with 'SAFETY:'. If view unclear: start with 'VIEW:'. "
-    "End with one question. "
-    "If user asks what a tool/nail looks like, add a line 'NEED_IMAGE: <prompt>'. "
-    "Otherwise do not add NEED_IMAGE."
+    "You are HandyBot, a safe handyman tutor for smart glasses.\n"
+    "Use camera + audio context. Give max 3 short steps under 60 words total.\n"
+    "If danger: begin with 'SAFETY:'. If view unclear: begin with 'VIEW:'. End with ONE question.\n"
+    "If user says stop/pause/cancel: reply exactly: 'Stopping now. Say start when you want to continue.'\n\n"
+    "OPTIONAL IMAGE:\n"
+    "Only when the user asks what a tool/part looks like OR a visual reference would truly help,\n"
+    "add ONE extra line anywhere in your response:\n"
+    "GEN_IMAGE: <very short prompt describing the reference image>\n"
+    "Otherwise do not include GEN_IMAGE."
 )
 
 class GeminiClient:
     def __init__(self, api_key: str = GEMINI_API_KEY):
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY not set")
         self.client = genai.Client(api_key=api_key)
 
-    async def analyze_handyman_context(self, audio_list: list, image_b64: str | None = None) -> str:
-        parts = []
+    def extract_image_prompt(self, text: str) -> str | None:
+        if not text:
+            return None
+        m = GEN_IMAGE_RE.search(text)
+        if not m:
+            return None
+        prompt = (m.group(1) or "").strip()
+        # Keep prompt short to reduce cost / weird generations
+        if len(prompt) > 160:
+            prompt = prompt[:160].strip()
+        return prompt or None
+
+    def strip_gen_image_line(self, text: str) -> str:
+        if not text:
+            return ""
+        # remove the GEN_IMAGE line from spoken text
+        return GEN_IMAGE_RE.sub("", text).strip()
+
+    async def analyze_handyman_context(self, audio_list_b64: list[str], image_b64: str | None = None) -> str:
+        parts: list[types.Part] = []
 
         if image_b64:
             try:
-                image_data = base64.b64decode(image_b64)
-                parts.append(types.Part.from_bytes(data=image_data, mime_type="image/jpeg"))
+                img_bytes = base64.b64decode(image_b64)
+                parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
             except Exception as e:
-                logger.warning(f"[GEMINI] bad image_b64 decode: {e}")
+                logger.warning(f"[Gemini] image decode failed: {e}")
 
-        for chunk in audio_list:
+        for chunk_b64 in audio_list_b64:
             try:
-                audio_data = base64.b64decode(chunk)
-                # IMPORTANT: include rate in mime_type for best results
-                parts.append(types.Part.from_bytes(data=audio_data, mime_type="audio/pcm;rate=16000"))
+                audio_bytes = base64.b64decode(chunk_b64)
+                # keep mime_type simple; sample rate context comes from your pipeline
+                parts.append(types.Part.from_bytes(data=audio_bytes, mime_type="audio/pcm"))
             except Exception as e:
-                logger.warning(f"[GEMINI] bad audio chunk decode: {e}")
+                logger.warning(f"[Gemini] audio decode failed: {e}")
 
         parts.append(types.Part.from_text(text=SYSTEM_PROMPT))
 
         try:
-            resp = await self.client.aio.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=TEXT_MODEL,
                 contents=[types.Content(role="user", parts=parts)],
                 config=types.GenerateContentConfig(
-                    temperature=0.4
-                )
+                    temperature=0.6,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level=types.ThinkingLevel.HIGH if THINKING_LEVEL == "high" else types.ThinkingLevel.LOW
+                    ),
+                    max_output_tokens=220,
+                ),
             )
-            return resp.text or ""
+            return (response.text or "").strip()
         except Exception as e:
             logger.error(f">>> [GEMINI TEXT ERROR] {e}")
-            return ""
+            return "VIEW: I lost connection. Please try again. What are you working on?"
 
-    async def generate_tool_image_b64(self, prompt: str) -> dict | None:
+    async def generate_reference_image_b64(self, prompt: str) -> tuple[str, str] | None:
         """
-        Calls IMAGE_MODEL, then compresses output to small JPEG for WS.
-        Returns: { mime_type: "image/jpeg", data_b64: "<base64>" }
+        Returns (mime_type, b64_jpeg)
         """
-        prompt = (prompt or "").strip()
         if not prompt:
             return None
 
@@ -72,39 +108,43 @@ class GeminiClient:
                 config=types.GenerateContentConfig(temperature=0.7),
             )
 
-            # Look for inline image bytes
+            # Find inline image bytes
             img_bytes = None
-            cand = (resp.candidates or [None])[0]
-            if cand and cand.content and cand.content.parts:
-                for p in cand.content.parts:
-                    if getattr(p, "inline_data", None) and p.inline_data.data:
-                        # p.inline_data.data is base64-ish in some shapes; handle both
-                        data = p.inline_data.data
-                        if isinstance(data, str):
-                            try:
-                                img_bytes = base64.b64decode(data)
-                            except:
-                                img_bytes = None
-                        else:
-                            img_bytes = data
+            for cand in (resp.candidates or []):
+                content = getattr(cand, "content", None)
+                if not content:
+                    continue
+                for p in (content.parts or []):
+                    inline = getattr(p, "inline_data", None) or getattr(p, "inlineData", None)
+                    if inline and getattr(inline, "data", None):
+                        img_bytes = base64.b64decode(inline.data)
                         break
+                if img_bytes:
+                    break
 
             if not img_bytes:
-                logger.warning("[GEMINI IMAGE] No image bytes found in response")
+                logger.warning("[Gemini Image] No inline image returned")
                 return None
 
-            # Compress to small JPEG for Render/WS safety
-            im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            im.thumbnail((512, 512))
+            # Compress / resize to keep payload small
+            try:
+                from PIL import Image
+                im = Image.open(BytesIO(img_bytes)).convert("RGB")
+                im.thumbnail((IMAGE_MAX_DIM, IMAGE_MAX_DIM))
+                out = BytesIO()
+                im.save(out, format="JPEG", quality=IMAGE_JPEG_QUALITY, optimize=True)
+                img_bytes = out.getvalue()
+            except Exception as e:
+                logger.warning(f"[Gemini Image] Pillow compress failed, sending raw bytes: {e}")
 
-            out = io.BytesIO()
-            im.save(out, format="JPEG", quality=70, optimize=True)
-            jpeg_bytes = out.getvalue()
+            b64 = base64.b64encode(img_bytes).decode("utf-8")
 
-            return {
-                "mime_type": "image/jpeg",
-                "data_b64": base64.b64encode(jpeg_bytes).decode("utf-8"),
-            }
+            # Hard clamp if still too large (avoid WS payload issues)
+            if len(b64) > IMAGE_MAX_B64_LEN:
+                logger.warning(f"[Gemini Image] b64 too large ({len(b64)}), dropping image")
+                return None
+
+            return ("image/jpeg", b64)
 
         except Exception as e:
             logger.error(f">>> [GEMINI IMAGE ERROR] {e}")

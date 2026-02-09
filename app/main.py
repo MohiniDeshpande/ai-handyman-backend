@@ -15,7 +15,9 @@ manager = SessionManager()
 
 JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
 
-NEED_IMAGE_RE = re.compile(r"NEED_IMAGE:\s*(.+)", re.IGNORECASE)
+@app.get("/health")
+async def health():
+    return {"ok": True}
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
@@ -25,7 +27,18 @@ async def websocket_endpoint(ws: WebSocket):
 
     try:
         while True:
-            message = await ws.receive()
+            try:
+                message = await ws.receive()
+            except WebSocketDisconnect:
+                print(f">>> [DISCONNECT] Session: {session.session_id}")
+                break
+            except RuntimeError as e:
+                # This is the exact error you're seeing. Treat it as disconnect and exit.
+                print(f">>> [WS RUNTIME] {e} (treating as disconnect)")
+                break
+            except Exception as e:
+                print(f">>> [WS ERROR] receive failed: {e}")
+                break
 
             raw_msg = ""
             if "text" in message and message["text"] is not None:
@@ -50,6 +63,7 @@ async def websocket_endpoint(ws: WebSocket):
                     session.audio_buffer = []
                     session.is_recording = True
                     continue
+
                 if msg_type == "stop_capture":
                     session.is_recording = False
                     asyncio.create_task(process_ai_request(ws, session))
@@ -61,7 +75,6 @@ async def websocket_endpoint(ws: WebSocket):
                 elif msg_type in ["audio_b64", "audio"]:
                     if not payload:
                         continue
-
                     try:
                         audio_bytes = base64.b64decode(payload)
                         audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -74,8 +87,13 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception as e:
                         print(f">>> [AUDIO DECODE ERROR] {e}")
 
-    except WebSocketDisconnect:
+    finally:
         manager.remove(session.session_id)
+        # do NOT call ws.receive here; just cleanup
+        try:
+            await ws.close()
+        except:
+            pass
 
 
 async def process_ai_request(ws: WebSocket, session):
@@ -94,26 +112,14 @@ async def process_ai_request(ws: WebSocket, session):
         if not ai_text:
             return
 
-        generated_image = None
-        m = NEED_IMAGE_RE.search(ai_text)
-        if m:
-            img_prompt = m.group(1).strip()
-            # Remove NEED_IMAGE line from spoken text
-            ai_text = NEED_IMAGE_RE.sub("", ai_text).strip()
-            generated_image = await gemini_client.generate_tool_image_b64(img_prompt)
-
-        payload = {
-            "event": "ai_result",
-            "type": "ai_result",
-            "data": {
-                "speech_text": ai_text,
-            },
-        }
-
-        if generated_image:
-            payload["data"]["generated_image"] = generated_image
-
-        await ws.send_text(json.dumps(payload))
-
+        # send only if still connected
+        if ws.client_state.name == "CONNECTED":
+            await ws.send_text(json.dumps({
+                "event": "ai_result",
+                "type": "ai_result",
+                "data": {"speech_text": ai_text}
+            }))
+    except Exception as e:
+        print(f">>> [AI TASK ERROR] {e}")
     finally:
         session.processing = False

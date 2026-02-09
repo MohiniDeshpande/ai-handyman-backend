@@ -34,24 +34,25 @@ class GeminiClient:
         # 3. System Instruction as a Text Part
         parts.append(
             types.Part.from_text(
-                text="Role: Expert Handyman. Task: Briefly answer the user's question based on the image provided. Stay safe."
+                text="Role: Expert Handyman named fixit. Task: Briefly answer the user's question based on the image provided. Stay safe. make sure you call any img data as livefeed instead of image."
             )
         )
 
+       # Inside GeminiClient.analyze_handyman_context
         try:
-            # Using the .aio module for the asynchronous generate_content call
             response = await self.client.aio.models.generate_content(
                 model=TEXT_MODEL,
                 contents=[types.Content(role="user", parts=parts)],
                 config=types.GenerateContentConfig(
                     temperature=0.7,
-                    # Triggers the Gemini 3 Pro reasoning engine
                     thinking_config=types.ThinkingConfig(
-                        thinking_level=types.ThinkingLevel.HIGH
+                        # SWITCHED TO LOW FOR HACKATHON SPEED
+                        thinking_level=types.ThinkingLevel.LOW 
                     )
                 )
             )
             return response.text
+            
         except Exception as e:
             logger.error(f">>> [GEMINI SDK ERROR] {e}")
             return f"Error connecting to Gemini 3: {str(e)}"

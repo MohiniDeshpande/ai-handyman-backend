@@ -1,181 +1,103 @@
 import base64
 import logging
-
 from google import genai
 from google.genai import types
+from app.config import GEMINI_API_KEY, TEXT_MODEL, MAX_SPOKEN_CHARS
 
-from app.config import GEMINI_API_KEY, TEXT_MODEL, IMAGE_MODEL
-
-# Render sometimes boots with stale config during deploy.
-# This prevents the whole server from crashing.
-try:
-    from app.config import MAX_SPOKEN_CHARS
-except ImportError:
-    MAX_SPOKEN_CHARS = 280
 logger = logging.getLogger(__name__)
-
-def _clamp_text(s: str, n: int) -> str:
-    s = (s or "").strip()
-    if len(s) <= n:
-        return s
-    return s[: n - 3].rstrip() + "..."
-
-def _extract_image_prompt(text: str) -> str | None:
-    """
-    Looks for a line like:
-    IMAGE_PROMPT: some prompt...
-    """
-    if not text:
-        return None
-    for line in text.splitlines():
-        if line.strip().upper().startswith("IMAGE_PROMPT:"):
-            return line.split(":", 1)[1].strip() or None
-    return None
 
 
 class GeminiClient:
     def __init__(self, api_key: str = GEMINI_API_KEY):
         self.client = genai.Client(api_key=api_key)
 
-    async def analyze_handyman_context(self, audio_list: list[str], image_b64: str | None = None) -> dict:
+    async def analyze_handyman_context(self, audio_list: list, image_b64: str = None):
         """
-        Returns:
-          {
-            "spoken_text": "...",
-            "image_prompt": "..." | None
-          }
+        Gemini 3 Pro multimodal reasoning:
+        - Audio + optional image
+        - Proactive safety detection
+        - Short, TTS-safe output
         """
-        parts: list[types.Part] = []
 
-        # image context (base64 jpeg from Spectacles)
+        parts = []
+
+        # ---- 1. IMAGE (optional) ----
         if image_b64:
             try:
                 image_bytes = base64.b64decode(image_b64)
-                parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
+                parts.append(
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type="image/jpeg"
+                    )
+                )
             except Exception as e:
-                logger.warning(f"[Gemini] image decode failed: {e}")
+                logger.warning(f"[Gemini] Failed to decode image: {e}")
 
-        # audio chunks (base64 pcm16 from Spectacles)
-        for b64chunk in audio_list or []:
+        # ---- 2. AUDIO (PCM16 chunks) ----
+        for chunk in audio_list:
             try:
-                audio_bytes = base64.b64decode(b64chunk)
-                parts.append(types.Part.from_bytes(data=audio_bytes, mime_type="audio/pcm"))
+                audio_bytes = base64.b64decode(chunk)
+                parts.append(
+                    types.Part.from_bytes(
+                        data=audio_bytes,
+                        mime_type="audio/pcm"
+                    )
+                )
             except Exception as e:
-                logger.warning(f"[Gemini] audio decode failed: {e}")
+                logger.warning(f"[Gemini] Failed to decode audio chunk: {e}")
 
-        system = (
-            "You are HandyBot, a safe handyman tutor using the user's camera + voice.\n"
-            "Output must be SHORT and TTS-friendly.\n"
-            f"Rules:\n"
-            f"- Max 60 words, simple sentences, no bullets, no emojis.\n"
-            f"- If danger: start with 'SAFETY:'. If view unclear: start with 'VIEW:'.\n"
-            f"- End with ONE question.\n"
-            f"- If the user asks what a tool/part looks like, include a single line:\n"
-            f"  IMAGE_PROMPT: <short prompt for image generation>\n"
-            f"- Otherwise omit IMAGE_PROMPT.\n"
+        # ---- 3. SYSTEM / SAFETY INSTRUCTION ----
+        instruction = (
+            "You are Fixit, an expert handyman and safety auditor.\n"
+            "You see through the user's camera and hear them through audio.\n\n"
+
+            "PRIMARY RULE:\n"
+            "If you detect ANY safety risk (electricity, sharp tools, gas, heat, load, instability), "
+            "you MUST start your response with the exact token [SAFETY_ALERT].\n\n"
+
+            "When a safety risk exists:\n"
+            "- Clearly name the danger.\n"
+            "- Give ONE immediate action.\n"
+            "- Be direct and serious.\n\n"
+
+            "If NO safety risk exists:\n"
+            "- Answer the user's question normally as Fixit.\n"
+            "- Give at most 3 short steps.\n"
+            "- Keep total response under 60 words.\n\n"
+
+            "If the camera view is insufficient, say VIEW and ask for a better angle.\n"
+            "If the user says stop or pause, respond with: "
+            "'Stopping now. Say start when you want to continue.'\n\n"
+
+            "Do NOT use markdown, emojis, or bullet symbols.\n"
+            "Plain spoken English only."
         )
 
-        parts.append(types.Part.from_text(system))
+        parts.append(types.Part.from_text(text=instruction))
 
+        # ---- 4. GEMINI CALL ----
         try:
-            resp = await self.client.aio.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=TEXT_MODEL,
                 contents=[types.Content(role="user", parts=parts)],
                 config=types.GenerateContentConfig(
-                    temperature=0.4,
-                    max_output_tokens=220,
-                ),
-            )
-            text = (resp.text or "").strip()
-            image_prompt = _extract_image_prompt(text)
-
-            # remove IMAGE_PROMPT line from spoken output
-            if image_prompt:
-                filtered = []
-                for line in text.splitlines():
-                    if not line.strip().upper().startswith("IMAGE_PROMPT:"):
-                        filtered.append(line)
-                text = "\n".join(filtered).strip()
-
-            return {
-                "spoken_text": _clamp_text(text, MAX_SPOKEN_CHARS),
-                "image_prompt": image_prompt,
-            }
-
-        except Exception as e:
-            logger.error(f">>> [GEMINI TEXT ERROR] {e}")
-            return {
-                "spoken_text": "Sorry, I couldn't reach the AI right now. Try again.",
-                "image_prompt": None,
-            }
-
-    async def generate_visual_aid(self, prompt: str) -> dict | None:
-        """
-        Returns:
-          {"mime_type": "image/jpeg", "data_b64": "..."} or None
-        """
-        prompt = (prompt or "").strip()
-        if not prompt:
-            return None
-
-        try:
-            resp = await self.client.aio.models.generate_content(
-                model=IMAGE_MODEL,
-                contents=[types.Content(role="user", parts=[types.Part.from_text(prompt)])],
-                config=types.GenerateContentConfig(
-                    temperature=0.4,
-                    max_output_tokens=1024,
-                ),
+                    temperature=0.1,  # factual + safe
+                    max_output_tokens=200,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level="low"  # cheaper + faster for Render
+                    )
+                )
             )
 
-            # Gemini image responses typically include inline bytes in parts.
-            # We'll scan candidate parts for bytes.
-            img_bytes = None
-            try:
-                cand = resp.candidates[0]
-                for p in cand.content.parts:
-                    # Different SDK builds expose bytes differently; handle common shapes
-                    if getattr(p, "inline_data", None) and getattr(p.inline_data, "data", None):
-                        img_bytes = p.inline_data.data
-                        break
-                    if getattr(p, "data", None) and isinstance(p.data, (bytes, bytearray)):
-                        img_bytes = bytes(p.data)
-                        break
-            except Exception:
-                pass
+            text = response.text or ""
 
-            if not img_bytes:
-                logger.warning("[Gemini IMG] No image bytes returned")
-                return None
+            # ---- 5. HARD CLAMP FOR LENS STUDIO TTS ----
+            if len(text) > MAX_SPOKEN_CHARS:
+                text = text[:MAX_SPOKEN_CHARS].rsplit(" ", 1)[0] + "..."
 
-            # Optional: compress to small JPEG to survive free Render + websocket size
-            img_bytes = self._compress_to_small_jpeg(img_bytes)
-
-            return {
-                "mime_type": "image/jpeg",
-                "data_b64": base64.b64encode(img_bytes).decode("utf-8"),
-            }
+            return text.strip()
 
         except Exception as e:
-            logger.error(f">>> [GEMINI IMG ERROR] {e}")
-            return None
-
-    def _compress_to_small_jpeg(self, img_bytes: bytes) -> bytes:
-        """
-        Best effort shrink. If Pillow isn't installed, just return original bytes.
-        """
-        try:
-            from PIL import Image
-            import io
-
-            im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            # downscale to max width 512
-            max_w = 512
-            if im.width > max_w:
-                h = int(im.height * (max_w / im.width))
-                im = im.resize((max_w, h))
-            out = io.BytesIO()
-            im.save(out, format="JPEG", quality=70, optimize=True)
-            return out.getvalue()
-        except Exception:
-            return img_bytes
+            logger.error(f"[Gemini SDK ERROR] {e}")
+            return "Sorry, I could not analyze that. Please try again."

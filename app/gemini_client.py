@@ -1,141 +1,175 @@
 import base64
-import io
 import logging
-from typing import Optional, Tuple
 
 from google import genai
 from google.genai import types
-from PIL import Image
 
-from app.config import GEMINI_API_KEY, TEXT_MODEL, IMAGE_MODEL
+from app.config import GEMINI_API_KEY, TEXT_MODEL, IMAGE_MODEL, MAX_SPOKEN_CHARS
 
 logger = logging.getLogger(__name__)
 
-# Condensed system prompt (short + deterministic triggers)
-SYSTEM_PROMPT = (
-    "You are HandyBot, a safe handyman tutor for smart glasses.\n"
-    "Use camera+audio context. Output must be short and TTS-safe.\n\n"
-    "RULES:\n"
-    "- Max 60 words total.\n"
-    "- Max 3 steps. Each step is one short sentence.\n"
-    "- If danger, start first line with: SAFETY:\n"
-    "- If view unclear, start first line with: VIEW:\n"
-    "- End with exactly one question.\n"
-    "- If user says stop/pause/cancel: reply only: Stopping now. Say start when you want to continue.\n\n"
-    "IMAGE TRIGGER:\n"
-    "If the user asks what a tool/part looks like, include a final line exactly:\n"
-    "IMAGE_REQUEST: <short visual prompt>\n"
-    "Otherwise do not include IMAGE_REQUEST.\n"
-)
+def _clamp_text(s: str, n: int) -> str:
+    s = (s or "").strip()
+    if len(s) <= n:
+        return s
+    return s[: n - 3].rstrip() + "..."
+
+def _extract_image_prompt(text: str) -> str | None:
+    """
+    Looks for a line like:
+    IMAGE_PROMPT: some prompt...
+    """
+    if not text:
+        return None
+    for line in text.splitlines():
+        if line.strip().upper().startswith("IMAGE_PROMPT:"):
+            return line.split(":", 1)[1].strip() or None
+    return None
+
 
 class GeminiClient:
     def __init__(self, api_key: str = GEMINI_API_KEY):
         self.client = genai.Client(api_key=api_key)
 
-    async def analyze_handyman_context(
-        self,
-        audio_list_b64: list,
-        image_b64: Optional[str] = None
-    ) -> str:
-        parts = []
+    async def analyze_handyman_context(self, audio_list: list[str], image_b64: str | None = None) -> dict:
+        """
+        Returns:
+          {
+            "spoken_text": "...",
+            "image_prompt": "..." | None
+          }
+        """
+        parts: list[types.Part] = []
 
+        # image context (base64 jpeg from Spectacles)
         if image_b64:
             try:
                 image_bytes = base64.b64decode(image_b64)
                 parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
             except Exception as e:
-                logger.warning(f"[GeminiClient] bad image_b64: {e}")
+                logger.warning(f"[Gemini] image decode failed: {e}")
 
-        # audio chunks
-        for chunk_b64 in audio_list_b64:
+        # audio chunks (base64 pcm16 from Spectacles)
+        for b64chunk in audio_list or []:
             try:
-                audio_bytes = base64.b64decode(chunk_b64)
-                # NOTE: Spectacles mic is PCM16. Keep mime_type simple.
+                audio_bytes = base64.b64decode(b64chunk)
                 parts.append(types.Part.from_bytes(data=audio_bytes, mime_type="audio/pcm"))
             except Exception as e:
-                logger.warning(f"[GeminiClient] bad audio chunk: {e}")
+                logger.warning(f"[Gemini] audio decode failed: {e}")
 
-        # Put system prompt as text part (works fine for generate_content)
-        parts.append(types.Part.from_text(SYSTEM_PROMPT))
-
-        response = await self.client.aio.models.generate_content(
-            model=TEXT_MODEL,
-            contents=[types.Content(role="user", parts=parts)],
-            config=types.GenerateContentConfig(
-                temperature=0.4,
-                max_output_tokens=220,
-            ),
+        system = (
+            "You are HandyBot, a safe handyman tutor using the user's camera + voice.\n"
+            "Output must be SHORT and TTS-friendly.\n"
+            f"Rules:\n"
+            f"- Max 60 words, simple sentences, no bullets, no emojis.\n"
+            f"- If danger: start with 'SAFETY:'. If view unclear: start with 'VIEW:'.\n"
+            f"- End with ONE question.\n"
+            f"- If the user asks what a tool/part looks like, include a single line:\n"
+            f"  IMAGE_PROMPT: <short prompt for image generation>\n"
+            f"- Otherwise omit IMAGE_PROMPT.\n"
         )
 
-        return response.text or ""
+        parts.append(types.Part.from_text(system))
 
-    def extract_image_request(self, text: str) -> Optional[str]:
-        if not text:
-            return None
-        for line in text.splitlines():
-            if line.strip().startswith("IMAGE_REQUEST:"):
-                req = line.split("IMAGE_REQUEST:", 1)[1].strip()
-                return req if req else None
-        return None
-
-    def strip_image_request_line(self, text: str) -> str:
-        if not text:
-            return ""
-        lines = []
-        for line in text.splitlines():
-            if line.strip().startswith("IMAGE_REQUEST:"):
-                continue
-            lines.append(line)
-        return "\n".join(lines).strip()
-
-    async def generate_reference_image_b64_jpeg(
-        self,
-        prompt: str,
-        max_side_px: int = 512,
-        jpeg_quality: int = 70
-    ) -> Optional[Tuple[str, str]]:
-        """
-        Returns (mime_type, data_b64) or None.
-        Uses IMAGE_MODEL and compresses output for Render/websocket safety.
-        """
         try:
-            # Ask for Image modality, then extract inline_data bytes.  [oai_citation:1‡geminibyexample.com](https://geminibyexample.com/005-image-generation/)
+            resp = await self.client.aio.models.generate_content(
+                model=TEXT_MODEL,
+                contents=[types.Content(role="user", parts=parts)],
+                config=types.GenerateContentConfig(
+                    temperature=0.4,
+                    max_output_tokens=220,
+                ),
+            )
+            text = (resp.text or "").strip()
+            image_prompt = _extract_image_prompt(text)
+
+            # remove IMAGE_PROMPT line from spoken output
+            if image_prompt:
+                filtered = []
+                for line in text.splitlines():
+                    if not line.strip().upper().startswith("IMAGE_PROMPT:"):
+                        filtered.append(line)
+                text = "\n".join(filtered).strip()
+
+            return {
+                "spoken_text": _clamp_text(text, MAX_SPOKEN_CHARS),
+                "image_prompt": image_prompt,
+            }
+
+        except Exception as e:
+            logger.error(f">>> [GEMINI TEXT ERROR] {e}")
+            return {
+                "spoken_text": "Sorry, I couldn't reach the AI right now. Try again.",
+                "image_prompt": None,
+            }
+
+    async def generate_visual_aid(self, prompt: str) -> dict | None:
+        """
+        Returns:
+          {"mime_type": "image/jpeg", "data_b64": "..."} or None
+        """
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return None
+
+        try:
             resp = await self.client.aio.models.generate_content(
                 model=IMAGE_MODEL,
-                contents=[prompt],
+                contents=[types.Content(role="user", parts=[types.Part.from_text(prompt)])],
                 config=types.GenerateContentConfig(
-                    response_modalities=["Text", "Image"],
-                    temperature=0.7,
+                    temperature=0.4,
+                    max_output_tokens=1024,
                 ),
             )
 
+            # Gemini image responses typically include inline bytes in parts.
+            # We'll scan candidate parts for bytes.
             img_bytes = None
-            if resp.candidates and resp.candidates[0].content and resp.candidates[0].content.parts:
-                for part in resp.candidates[0].content.parts:
-                    if getattr(part, "inline_data", None) is not None:
-                        # inline_data.data is bytes in python-genai
-                        img_bytes = part.inline_data.data
+            try:
+                cand = resp.candidates[0]
+                for p in cand.content.parts:
+                    # Different SDK builds expose bytes differently; handle common shapes
+                    if getattr(p, "inline_data", None) and getattr(p.inline_data, "data", None):
+                        img_bytes = p.inline_data.data
                         break
+                    if getattr(p, "data", None) and isinstance(p.data, (bytes, bytearray)):
+                        img_bytes = bytes(p.data)
+                        break
+            except Exception:
+                pass
 
             if not img_bytes:
-                logger.warning("[GeminiClient] No inline image data returned.")
+                logger.warning("[Gemini IMG] No image bytes returned")
                 return None
 
-            # Downscale + JPEG compress
-            pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            w, h = pil.size
-            scale = min(1.0, float(max_side_px) / float(max(w, h)))
-            if scale < 1.0:
-                pil = pil.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            # Optional: compress to small JPEG to survive free Render + websocket size
+            img_bytes = self._compress_to_small_jpeg(img_bytes)
 
-            out = io.BytesIO()
-            pil.save(out, format="JPEG", quality=jpeg_quality, optimize=True)
-            out_bytes = out.getvalue()
-
-            # Safety: keep payload small-ish (< ~700KB base64 ideal)
-            b64 = base64.b64encode(out_bytes).decode("ascii")
-            return ("image/jpeg", b64)
+            return {
+                "mime_type": "image/jpeg",
+                "data_b64": base64.b64encode(img_bytes).decode("utf-8"),
+            }
 
         except Exception as e:
-            logger.error(f"[GeminiClient] image gen error: {e}")
+            logger.error(f">>> [GEMINI IMG ERROR] {e}")
             return None
+
+    def _compress_to_small_jpeg(self, img_bytes: bytes) -> bytes:
+        """
+        Best effort shrink. If Pillow isn't installed, just return original bytes.
+        """
+        try:
+            from PIL import Image
+            import io
+
+            im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            # downscale to max width 512
+            max_w = 512
+            if im.width > max_w:
+                h = int(im.height * (max_w / im.width))
+                im = im.resize((max_w, h))
+            out = io.BytesIO()
+            im.save(out, format="JPEG", quality=70, optimize=True)
+            return out.getvalue()
+        except Exception:
+            return img_bytes

@@ -10,7 +10,7 @@ IMAGE_MODEL = "gemini-3-pro-image-preview"
 # Audio config
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_MIME_TYPE = "audio/pcm"
-//AUDIO_FLUSH_MS = 500
+#AUDIO_FLUSH_MS = 500
 
 # Session config
 SESSION_TIMEOUT_SECONDS = 3600

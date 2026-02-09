@@ -84,4 +84,4 @@ async def process_ai_request(ws: WebSocket, session):
         await ws.send_text(json.dumps({
             "event": "ai_result",
             "data": {"speech_text": ai_text}
-        })) 
+        }))

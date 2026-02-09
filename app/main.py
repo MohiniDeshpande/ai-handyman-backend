@@ -3,9 +3,7 @@ import asyncio
 import re
 import base64
 import numpy as np
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
 from app.gemini_client import GeminiClient
 from app.session_manager import SessionManager
 from app.config import SILENCE_THRESHOLD, AUDIO_TRIGGER_CHUNKS
@@ -14,144 +12,173 @@ app = FastAPI()
 gemini_client = GeminiClient()
 manager = SessionManager()
 
-# If multiple JSON blobs get concatenated, we try to extract them
 JSON_PATTERN = re.compile(r'(\{(?:"type"|"event"):[^}]+\})')
 
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+# How often to run proactive safety checks (seconds)
+SAFETY_CHECK_INTERVAL = 4.0
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     session = manager.get_or_create()
-    print(f">>> [CONNECTED] session={session.session_id}")
+    print(f">>> [CONNECTED] Session: {session.session_id}")
+
+    # Start background safety task
+    safety_task = asyncio.create_task(process_safety_check(ws, session))
 
     try:
         while True:
-            msg = await ws.receive()
+            message = await ws.receive()
 
-            raw = ""
-            if "text" in msg and msg["text"]:
-                raw = msg["text"]
-            elif "bytes" in msg and msg["bytes"]:
-                raw = msg["bytes"].decode("utf-8", errors="ignore")
+            raw_msg = ""
+            if "text" in message:
+                raw_msg = message["text"]
+            elif "bytes" in message:
+                raw_msg = message["bytes"].decode("utf-8", errors="ignore")
 
-            if not raw:
+            if not raw_msg:
                 continue
 
-            # Sometimes clients accidentally concatenate JSON packets
-            objs = JSON_PATTERN.findall(raw) or [raw]
-
-            for obj_str in objs:
+            # Handle packet stitching (Lens Studio can concatenate JSON)
+            found_objects = JSON_PATTERN.findall(raw_msg)
+            for obj_str in found_objects:
                 try:
                     data = json.loads(obj_str.strip())
-                except Exception:
+                except:
                     continue
 
                 msg_type = data.get("event") or data.get("type")
                 payload = data.get("data") or data.get("value")
 
-                # --- keepalive ---
-                if msg_type == "ping":
-                    await ws.send_text(json.dumps({"event": "pong"}))
-                    continue
-
-                # --- controls (optional, for UI press/hold) ---
-                if msg_type == "start_capture":
+                # ---- CONTROL EVENTS ----
+                if msg_type == "start_audio":
                     session.audio_buffer = []
                     session.is_recording = True
-                    print(f">>> [CAPTURE] START session={session.session_id}")
                     continue
 
-                if msg_type == "stop_capture":
+                if msg_type == "stop_audio":
                     session.is_recording = False
-                    print(f">>> [CAPTURE] STOP session={session.session_id} chunks={len(session.audio_buffer)}")
                     asyncio.create_task(process_ai_request(ws, session))
                     continue
 
-                # --- video stream (continuous) ---
-                if msg_type in ("video_b64", "video"):
-                    if isinstance(payload, str) and payload:
-                        session.latest_video = payload
+                # ---- VIDEO ----
+                if msg_type in ["video_b64", "video"]:
+                    session.latest_video = payload
                     continue
 
-                # --- audio stream (buffered) ---
-                if msg_type in ("audio_b64", "audio"):
-                    if not isinstance(payload, str) or not payload:
+                # ---- AUDIO ----
+                if msg_type in ["audio_b64", "audio"]:
+                    if not payload:
                         continue
 
-                    # quick logging every so often (optional)
-                    # print(f">>> [AUDIO] recv b64Len={len(payload)} recording={session.is_recording}")
-
-                    # energy gate
                     try:
                         audio_bytes = base64.b64decode(payload)
                         audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                        energy = float(np.abs(audio_data).mean())
-                    except Exception:
+                    except:
                         continue
 
-                    if energy > SILENCE_THRESHOLD or session.is_recording:
+                    # Buffer audio only if loud enough OR explicitly recording
+                    if np.abs(audio_data).mean() > SILENCE_THRESHOLD or session.is_recording:
                         session.audio_buffer.append(payload)
 
-                    # auto trigger
+                    # Auto-trigger when enough audio collected
                     if len(session.audio_buffer) >= AUDIO_TRIGGER_CHUNKS:
                         asyncio.create_task(process_ai_request(ws, session))
 
+                if msg_type == "ping":
+                    await ws.send_text(json.dumps({"event": "pong"}))
+
     except WebSocketDisconnect:
-        print(f">>> [DISCONNECTED] session={session.session_id}")
+        print(f">>> [DISCONNECTED] Session: {session.session_id}")
+
     finally:
+        safety_task.cancel()
         manager.remove(session.session_id)
 
 
+# --------------------------------------------------
+# AUDIO + VIDEO → MAIN AI RESPONSE
+# --------------------------------------------------
 async def process_ai_request(ws: WebSocket, session):
-    # prevent overlapping calls
     if session.processing:
         return
+
     if not session.audio_buffer:
         return
 
     session.processing = True
 
-    # snapshot
-    audio_list = list(session.audio_buffer)
-    image_b64 = session.latest_video
+    current_audio = list(session.audio_buffer)
+    current_video = session.latest_video
     session.audio_buffer = []
 
-    try:
-        print(f">>> [AI] calling Gemini session={session.session_id} audioChunks={len(audio_list)} hasVideo={bool(image_b64)}")
+    ai_text = await gemini_client.analyze_handyman_context(
+        current_audio,
+        current_video
+    )
 
-        result = await gemini_client.analyze_handyman_context(audio_list, image_b64)
-        spoken = (result.get("spoken_text") or "").strip()
-        image_prompt = result.get("image_prompt")
+    session.processing = False
 
-        generated_image = None
-        if image_prompt:
-            print(f">>> [AI] image requested prompt='{image_prompt[:60]}'")
-            generated_image = await gemini_client.generate_visual_aid(image_prompt)
-            if generated_image:
-                print(f">>> [AI] image ready b64Len={len(generated_image.get('data_b64',''))}")
-            else:
-                print(">>> [AI] image generation failed (no bytes)")
+    if not ai_text:
+        return
 
-        payload = {
-            "type": "ai_result",
-            "event": "ai_result",
-            "data": {
-                "speech_text": spoken,
-            }
+    if ws.client_state.name != "CONNECTED":
+        return
+
+    payload = {
+        "event": "ai_result",
+        "data": {
+            "speech_text": ai_text
         }
+    }
 
-        if generated_image:
-            payload["data"]["generated_image"] = generated_image
+    await ws.send_text(json.dumps(payload))
+    print(">>> [AI RESULT SENT]")
 
-        if ws.client_state.name == "CONNECTED":
-            await ws.send_text(json.dumps(payload))
-            print(f">>> [AI] sent ai_result spokenLen={len(spoken)}")
-    except Exception as e:
-        print(f">>> [AI ERROR] {e}")
-    finally:
-        session.processing = False
+
+# --------------------------------------------------
+# PROACTIVE VIDEO-ONLY SAFETY CHECK
+# --------------------------------------------------
+async def process_safety_check(ws: WebSocket, session):
+    """
+    Runs periodically using ONLY video frames.
+    Sends proactive warnings if Gemini detects danger.
+    """
+    while True:
+        await asyncio.sleep(SAFETY_CHECK_INTERVAL)
+
+        # Must have a frame to analyze
+        if not session.latest_video:
+            continue
+
+        # Avoid overlapping Gemini calls
+        if session.processing:
+            continue
+
+        try:
+            ai_text = await gemini_client.analyze_handyman_context(
+                audio_list=[],
+                image_b64=session.latest_video
+            )
+        except Exception as e:
+            print(f">>> [SAFETY CHECK ERROR] {e}")
+            continue
+
+        if not ai_text:
+            continue
+
+        if "[SAFETY_ALERT]" in ai_text:
+            warning = ai_text.replace("[SAFETY_ALERT]", "").strip()
+
+            payload = {
+                "event": "proactive_warning",
+                "data": {
+                    "severity": "CRITICAL",
+                    "message": warning
+                }
+            }
+
+            if ws.client_state.name == "CONNECTED":
+                await ws.send_text(json.dumps(payload))
+                print(">>> [PROACTIVE SAFETY ALERT SENT]")

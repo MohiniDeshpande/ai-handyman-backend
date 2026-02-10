@@ -1,0 +1,80 @@
+- !<AssetImportMetadata/250fdd38-aaee-4718-b7e6-74e87d51cc8b>
+  ImportedAssetIds:
+    TypeScriptAsset: !<reference> f4dddc80-d03f-4a40-b03f-67e237608f31
+  ImporterName: TypeScriptAssetImporter
+  PrimaryAsset: !<reference> f4dddc80-d03f-4a40-b03f-67e237608f31
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    TypeScriptAsset: !<own> 6c9a8074-a7a8-49c2-bb76-ab846c16511b
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<TypeScriptAssetData/6c9a8074-a7a8-49c2-bb76-ab846c16511b>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  ComponentUid: ae4ebc4c-b3f0-45c4-97f9-1f22e728a130
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    aiOutputPanel: false
+    autoConnect: false
+    autoStartVideo: false
+    haveVideoInput: false
+    internetModule: false
+    logEveryNAudioChunks: false
+    logEveryNVideoFrames: false
+    logInboundPreviewChars: false
+    microphoneRecorder: false
+    pingSeconds: false
+    ttsPlayer: false
+    websocketRequirementsObj: false
+    wsUrl: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - internetModule: !<reference.InternetModule> 00000000-0000-0000-0000-000000000000
+      wsUrl: "wss://AI_handyman.onrender.com/ws/spectacles"
+      websocketRequirementsObj: !<reference.SceneObject> 00000000-0000-0000-0000-000000000000
+      ttsPlayer: !<reference.ScriptComponent> 00000000-0000-0000-0000-000000000000
+      aiOutputPanel: !<reference.ScriptComponent> 00000000-0000-0000-0000-000000000000
+      microphoneRecorder: !<MappingBased.AssignableType> 00000000-0000-0000-0000-000000000000
+      haveVideoInput: true
+      autoConnect: true
+      autoStartVideo: true
+      pingSeconds: !<float> 10.000000
+      logEveryNAudioChunks: !<float> 10.000000
+      logEveryNVideoFrames: !<float> 5.000000
+      logInboundPreviewChars: !<float> 300.000000
+  ScriptTypes:
+    -
+      {}
+  InputLines:
+    - // @input Asset.InternetModule internetModule
+    - '// @input string wsUrl = "wss://ai-handyman-backend.onrender.com/ws"'
+    - // @input SceneObject websocketRequirementsObj
+    - // @input Component.ScriptComponent ttsPlayer
+    - // @input Component.ScriptComponent aiOutputPanel
+    - // @input AssignableType microphoneRecorder
+    - // @input bool haveVideoInput = true
+    - // @input bool autoConnect = true
+    - // @input bool autoStartVideo = true
+    - // @input float pingSeconds = 10
+    - // @input float logEveryNAudioChunks = 10
+    - // @input float logEveryNVideoFrames = 5
+    - // @input float logInboundPreviewChars = 260

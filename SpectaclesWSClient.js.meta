@@ -1,0 +1,50 @@
+- !<AssetImportMetadata/4e1cf074-b077-4cc3-8b1d-aca1a37e3322>
+  ImportedAssetIds:
+    JavaScriptAsset: !<reference> 6c753bac-5c57-431d-a264-f31b28a68b93
+  ImporterName: JavaScriptAssetImporter
+  PrimaryAsset: !<reference> 6c753bac-5c57-431d-a264-f31b28a68b93
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    JavaScriptAsset: !<own> 3dce47ca-4049-4a10-bdab-f9071a7d169d
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<ScriptAssetData/3dce47ca-4049-4a10-bdab-f9071a7d169d>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  ComponentUid: dcc1d0b7-1bf2-49e5-8468-8ff77f9b8ae0
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    heartbeatSeconds: false
+    internetModule: false
+    pcmPlayer: false
+    reconnectSeconds: false
+    wsUrl: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - internetModule: !<reference.InternetModule> 00000000-0000-0000-0000-000000000000
+      wsUrl: "wss://YOUR_DOMAIN/ws"
+      pcmPlayer: !<reference.ScriptComponent> 00000000-0000-0000-0000-000000000000
+      reconnectSeconds: 1.500000
+      heartbeatSeconds: !<float> 10.000000
+  ScriptTypes:
+    -
+      {}

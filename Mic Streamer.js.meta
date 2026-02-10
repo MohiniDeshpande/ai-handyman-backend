@@ -1,0 +1,48 @@
+- !<AssetImportMetadata/06fe8a27-2e04-4650-83af-b894fa3c9a43>
+  ImportedAssetIds:
+    JavaScriptAsset: !<reference> 4f09e5ee-a64f-4491-9d0d-7a43084be57b
+  ImporterName: JavaScriptAssetImporter
+  PrimaryAsset: !<reference> 4f09e5ee-a64f-4491-9d0d-7a43084be57b
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    JavaScriptAsset: !<own> 0defaf57-97db-421f-8d35-f189793fd1eb
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<ScriptAssetData/0defaf57-97db-421f-8d35-f189793fd1eb>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  ComponentUid: a1707033-bc90-44cf-b754-bb6c99af617b
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    frameSamples: false
+    micTrack: false
+    targetSampleRate: false
+    wsManager: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - wsManager: !<reference.ScriptComponent> 00000000-0000-0000-0000-000000000000
+      micTrack: !<reference.AudioTrackAsset> 00000000-0000-0000-0000-000000000000
+      frameSamples: 2048
+      targetSampleRate: 16000
+  ScriptTypes:
+    -
+      {}

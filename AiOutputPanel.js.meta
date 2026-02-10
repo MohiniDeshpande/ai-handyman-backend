@@ -1,0 +1,52 @@
+- !<AssetImportMetadata/aabd07cf-46df-492c-9d3e-39ed2ac8c029>
+  ImportedAssetIds:
+    JavaScriptAsset: !<reference> 0e759317-5511-44c7-8f69-023e8ebf9ea1
+  ImporterName: JavaScriptAssetImporter
+  PrimaryAsset: !<reference> 0e759317-5511-44c7-8f69-023e8ebf9ea1
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    JavaScriptAsset: !<own> 3e78ca9e-3502-4972-8c02-6eb2e23a7f04
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<ScriptAssetData/3e78ca9e-3502-4972-8c02-6eb2e23a7f04>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  ComponentUid: 99381f2e-c1ac-4297-81b6-2158badc0133
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    autoHideSeconds: false
+    maxChars: false
+    normalPlateObj: false
+    startHidden: false
+    textComponent: false
+    warningPlateObj: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - normalPlateObj: !<reference.SceneObject> 00000000-0000-0000-0000-000000000000
+      warningPlateObj: !<reference.SceneObject> 00000000-0000-0000-0000-000000000000
+      textComponent: !<reference.Component> 00000000-0000-0000-0000-000000000000
+      maxChars: 900
+      startHidden: true
+      autoHideSeconds: !<float> 0.000000
+  ScriptTypes:
+    -
+      {}

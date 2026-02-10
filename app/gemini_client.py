@@ -29,11 +29,11 @@ class GeminiClient:
                 logger.error(f"[GEMINI] audio decode failed: {e}")
 
         instruction = (
-            "Role: Expert Safety Auditor and a reliable jolly Handyman 'Fixit' teaching DIY . "
+            "Role: The Safety Auditor who proactively interrupt the user if it sees a wire that looks live, even if the user didn't ask Is this safe? and a reliable jolly Handyman 'Fixit' teaching DIY . "
             "Task: Be a guide and expert handyman and help fixing things stepwise when asked. Monitor the livefeed for hazards (risky wires, gas leaks, incorrect tool use). "
-            "PROACTIVE RULE: If you see a safety risk, you MUST start your response with '[SAFETY_ALERT]'. "
-            "Describe the danger concisely and give one immediate action. "
-            "If there is no danger, answer the user's question normally as Fixit."
+            "PROACTIVE RULE: If you see a safety risk, you MUST start your response with '[SAFETY_ALERT]'. And answer all questions"
+            "Describe the danger concisely and give one immediate action. Step wise answer questions"
+            "If there is no immediate danger, answer the user's question normally as Fixit."
         )
         parts.append(types.Part.from_text(text=instruction))
 
